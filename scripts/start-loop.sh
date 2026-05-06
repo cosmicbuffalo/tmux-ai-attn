@@ -2,6 +2,10 @@
 set -euo pipefail
 
 CURRENT_DIR="${1:?current dir required}"
+RESTART=0
+if [ "${2:-}" = "--restart" ]; then
+  RESTART=1
+fi
 SOCKET="$(tmux display-message -p '#{socket_path}' 2>/dev/null || true)"
 
 if [ -z "$SOCKET" ]; then
@@ -46,7 +50,14 @@ fi
 if [ -f "$PIDFILE" ]; then
   PID="$(cat "$PIDFILE" 2>/dev/null || true)"
   if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    exit 0
+    if [ "$RESTART" -eq 0 ]; then
+      exit 0
+    fi
+    kill "$PID" 2>/dev/null || true
+    for _i in 1 2 3 4 5; do
+      kill -0 "$PID" 2>/dev/null || break
+      sleep 0.1
+    done
   fi
   rm -f "$PIDFILE"
 fi
@@ -58,4 +69,4 @@ BIN="$CURRENT_DIR/bin/tmux-ai-attn-sync"
 # Configuration options are preserved; only runtime state is cleared.
 "$BIN" --tmux-socket "$SOCKET" --clear 2>/dev/null || true
 
-nohup "$BIN" --tmux-socket "$SOCKET" --pidfile "$PIDFILE" >"$LOGFILE" 2>&1 &
+nohup "$BIN" --tmux-socket "$SOCKET" --pidfile "$PIDFILE" >"$LOGFILE" 2>&1 9>&- &

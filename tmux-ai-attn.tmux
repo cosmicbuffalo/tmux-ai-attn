@@ -30,7 +30,40 @@ if [ ${#DEFAULT_BATCH[@]} -gt 0 ]; then
   tmux "${DEFAULT_BATCH[@]}"
 fi
 
-"$CURRENT_DIR/scripts/start-loop.sh" "$CURRENT_DIR" || true
+"$CURRENT_DIR/scripts/start-loop.sh" "$CURRENT_DIR" "--restart" || true
+
+# Remove any previously registered hooks from this plugin before re-registering.
+# This prevents hook accumulation across repeated source-file reloads.
+clear_plugin_hooks() {
+  local hook="$1"
+  local raw
+  raw="$(tmux show-hooks -g 2>/dev/null || true)"
+  # If no hooks reference our plugin dir, nothing to do.
+  if ! printf '%s\n' "$raw" | grep -Fq "$CURRENT_DIR"; then
+    return
+  fi
+  # Collect lines for this hook event, keeping non-plugin ones.
+  local others=()
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    # Lines look like: hook-name[N] run-shell ...
+    case "$line" in
+      "${hook}["*) ;;
+      *) continue ;;
+    esac
+    if printf '%s' "$line" | grep -Fq "$CURRENT_DIR"; then
+      continue
+    fi
+    # Extract the command part after "hook[N] "
+    local cmd="${line#*] }"
+    others+=("$cmd")
+  done <<< "$raw"
+  # Unset and re-add non-plugin hooks.
+  tmux set-hook -gu "$hook" 2>/dev/null || true
+  for cmd in "${others[@]+"${others[@]}"}"; do
+    tmux set-hook -ag "$hook" "$cmd"
+  done
+}
 
 ensure_hook_contains() {
   local hook="$1"
@@ -68,6 +101,7 @@ HOOK_SH='if [ -x "'"$START_LOOP"'" ]; then "'"$START_LOOP"'" "'"$CURRENT_DIR"'" 
 HOOK_COMMAND="run-shell -b '$HOOK_SH'"
 
 for hook in client-attached client-session-changed session-created after-new-session; do
+  clear_plugin_hooks "$hook"
   ensure_hook_contains "$hook" "$HOOK_COMMAND"
 done
 
@@ -83,6 +117,7 @@ BELL_SCRIPT="$CURRENT_DIR/scripts/bell-to-ai-attn.sh"
 # shellcheck disable=SC2016
 BELL_HOOK_SH='[ -x "'"$BELL_SCRIPT"'" ] && "'"$BELL_SCRIPT"'" "#{pane_current_command}" "#{pane_start_command}" "#{pane_id}" "#{pane_current_path}" "#{@ai_attn_cli}"'
 BELL_HOOK_COMMAND="run-shell -b '$BELL_HOOK_SH'"
+clear_plugin_hooks "alert-bell"
 ensure_hook_contains "alert-bell" "$BELL_HOOK_COMMAND"
 
 if [ "$(tmux show-option -gqv @ai_attn_enable_default_formats)" = "on" ]; then

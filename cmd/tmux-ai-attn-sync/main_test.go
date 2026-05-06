@@ -195,8 +195,9 @@ func TestStateHashEmptyIsStable(t *testing.T) {
 	}
 }
 
-// TestTickForStateFlashingReturns1s verifies that tickForState returns 1s when any pane is flashing.
-func TestTickForStateFlashingReturns1s(t *testing.T) {
+// TestTickForStateFlashingWithWorkingReturns120ms verifies that tickForState returns 120ms
+// when both working and flashing panes exist (working's 120ms is faster than flash's 480ms).
+func TestTickForStateFlashingWithWorkingReturns120ms(t *testing.T) {
 	state := flashState{
 		StatefulPanes: map[string]record{
 			"%1": {State: "working", Agent: "claude"},
@@ -207,14 +208,14 @@ func TestTickForStateFlashingReturns1s(t *testing.T) {
 		},
 	}
 	got := tickForState(state)
-	if got != 1*time.Second {
-		t.Fatalf("expected 1s tick for flashing state, got %v", got)
+	if got != 120*time.Millisecond {
+		t.Fatalf("expected 120ms tick when working+flashing, got %v", got)
 	}
 }
 
-// TestTickForStateWorkingOnlyReturns10s verifies that tickForState returns 10s when
-// panes are active but none are flashing.
-func TestTickForStateWorkingOnlyReturns10s(t *testing.T) {
+// TestTickForStateWorkingOnlyReturns120ms verifies that tickForState returns 120ms when
+// a working pane exists (for spinner animation) even without flashing.
+func TestTickForStateWorkingOnlyReturns120ms(t *testing.T) {
 	state := flashState{
 		StatefulPanes: map[string]record{
 			"%1": {State: "working", Agent: "claude"},
@@ -222,8 +223,8 @@ func TestTickForStateWorkingOnlyReturns10s(t *testing.T) {
 		PanesFlashing: map[string]bool{},
 	}
 	got := tickForState(state)
-	if got != 10*time.Second {
-		t.Fatalf("expected 10s tick for working-only state (no flash), got %v", got)
+	if got != 120*time.Millisecond {
+		t.Fatalf("expected 120ms tick for working state (spinner), got %v", got)
 	}
 }
 
@@ -643,8 +644,8 @@ func TestStateHashStableOnMultipleCalls(t *testing.T) {
 // tickForState edge case
 // ---------------------------------------------------------------------------
 
-// TestTickForStateWindowFlashOnly verifies that tickForState returns 1s when
-// a window is flashing but no panes are flashing.
+// TestTickForStateWindowFlashOnly verifies that tickForState returns 480ms when
+// a window is flashing but no panes are flashing and no pane is working.
 func TestTickForStateWindowFlashOnly(t *testing.T) {
 	state := flashState{
 		StatefulPanes:   map[string]record{"%1": {State: "waiting", Agent: "codex"}},
@@ -652,8 +653,154 @@ func TestTickForStateWindowFlashOnly(t *testing.T) {
 		WindowsFlashing: map[string]bool{"@1": true},
 	}
 	got := tickForState(state)
-	if got != 1*time.Second {
-		t.Fatalf("expected 1s tick for window-only flash, got %v", got)
+	if got != 480*time.Millisecond {
+		t.Fatalf("expected 480ms tick for window-only flash, got %v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spinner tests
+// ---------------------------------------------------------------------------
+
+// TestComputeSpinnerFrame verifies that computeSpinnerFrame returns a valid frame.
+func TestComputeSpinnerFrame(t *testing.T) {
+	frame := computeSpinnerFrame()
+	valid := map[string]bool{"·": true, "✢": true, "✳": true, "✶": true, "✽": true, "✻": true}
+	if !valid[frame] {
+		t.Fatalf("computeSpinnerFrame returned unexpected frame %q", frame)
+	}
+}
+
+// TestTickForStateFlashOnlyReturns480ms verifies that tickForState returns 480ms
+// when panes are flashing but none are working.
+func TestTickForStateFlashOnlyReturns480ms(t *testing.T) {
+	state := flashState{
+		StatefulPanes: map[string]record{
+			"%1": {State: "waiting", Agent: "codex"},
+		},
+		PanesFlashing: map[string]bool{"%1": true},
+	}
+	got := tickForState(state)
+	if got != 480*time.Millisecond {
+		t.Fatalf("expected 480ms tick for flash-only, got %v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stopped state tests
+// ---------------------------------------------------------------------------
+
+// TestBuildFlashStateStoppedPaneNotInWaiting verifies that a record with State="stopped"
+// appears in StatefulPanes but NOT in WaitingPanes or WaitingWindows.
+func TestBuildFlashStateStoppedPaneNotInWaiting(t *testing.T) {
+	records := []record{{
+		Agent:     "claude",
+		PaneID:    "%1",
+		Reason:    "StopFailure",
+		UpdatedAt: 100,
+		State:     "stopped",
+	}}
+	paneToWindow := map[string]string{"%1": "@1"}
+	windows := map[string]struct{}{"@1": {}}
+	activeWindows := map[string]struct{}{"@1": {}}
+	seenAt := map[string]int64{"@1": 0}
+
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3)
+
+	if _, ok := state.StatefulPanes["%1"]; !ok {
+		t.Fatal("expected stopped pane in StatefulPanes")
+	}
+	if state.StatefulPanes["%1"].State != "stopped" {
+		t.Fatalf("expected state=stopped, got %s", state.StatefulPanes["%1"].State)
+	}
+	if _, ok := state.WaitingPanes["%1"]; ok {
+		t.Fatal("expected stopped pane NOT in WaitingPanes")
+	}
+	if state.WaitingWindows["@1"] != 0 {
+		t.Fatalf("expected WaitingWindows count=0 for stopped pane, got %d", state.WaitingWindows["@1"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Window state aggregation tests
+// ---------------------------------------------------------------------------
+
+// TestComputeWindowStatesWaitingWins verifies waiting beats all other states.
+func TestComputeWindowStatesWaitingWins(t *testing.T) {
+	panes := map[string]record{
+		"%1": {State: "working"},
+		"%2": {State: "waiting"},
+		"%3": {State: "stopped"},
+		"%4": {State: "done"},
+	}
+	paneToWindow := map[string]string{"%1": "@1", "%2": "@1", "%3": "@1", "%4": "@1"}
+	states := computeWindowStates(panes, paneToWindow)
+	if states["@1"] != "waiting" {
+		t.Fatalf("expected window state=waiting, got %s", states["@1"])
+	}
+}
+
+// TestComputeWindowStatesStoppedBeatsWorking verifies stopped beats working and done.
+func TestComputeWindowStatesStoppedBeatsWorking(t *testing.T) {
+	panes := map[string]record{
+		"%1": {State: "working"},
+		"%2": {State: "stopped"},
+		"%3": {State: "done"},
+	}
+	paneToWindow := map[string]string{"%1": "@1", "%2": "@1", "%3": "@1"}
+	states := computeWindowStates(panes, paneToWindow)
+	if states["@1"] != "stopped" {
+		t.Fatalf("expected window state=stopped, got %s", states["@1"])
+	}
+}
+
+// TestComputeWindowStatesWorkingBeatsDone verifies working beats done.
+func TestComputeWindowStatesWorkingBeatsDone(t *testing.T) {
+	panes := map[string]record{
+		"%1": {State: "done"},
+		"%2": {State: "working"},
+	}
+	paneToWindow := map[string]string{"%1": "@1", "%2": "@1"}
+	states := computeWindowStates(panes, paneToWindow)
+	if states["@1"] != "working" {
+		t.Fatalf("expected window state=working, got %s", states["@1"])
+	}
+}
+
+// TestComputeWindowStatesSingleDone verifies a single done pane produces done.
+func TestComputeWindowStatesSingleDone(t *testing.T) {
+	panes := map[string]record{
+		"%1": {State: "done"},
+	}
+	paneToWindow := map[string]string{"%1": "@1"}
+	states := computeWindowStates(panes, paneToWindow)
+	if states["@1"] != "done" {
+		t.Fatalf("expected window state=done, got %s", states["@1"])
+	}
+}
+
+// TestComputeWindowStatesEmpty verifies no panes produces empty map.
+func TestComputeWindowStatesEmpty(t *testing.T) {
+	states := computeWindowStates(map[string]record{}, map[string]string{})
+	if len(states) != 0 {
+		t.Fatalf("expected empty window states, got %v", states)
+	}
+}
+
+// TestComputeWindowStatesMultipleWindows verifies independent windows get their own states.
+func TestComputeWindowStatesMultipleWindows(t *testing.T) {
+	panes := map[string]record{
+		"%1": {State: "working"},
+		"%2": {State: "waiting"},
+		"%3": {State: "done"},
+	}
+	paneToWindow := map[string]string{"%1": "@1", "%2": "@2", "%3": "@1"}
+	states := computeWindowStates(panes, paneToWindow)
+	if states["@1"] != "working" {
+		t.Fatalf("expected window @1 state=working, got %s", states["@1"])
+	}
+	if states["@2"] != "waiting" {
+		t.Fatalf("expected window @2 state=waiting, got %s", states["@2"])
 	}
 }
 

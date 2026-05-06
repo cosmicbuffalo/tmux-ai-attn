@@ -40,6 +40,13 @@ type flashState struct {
 
 const debounceDuration = 50 * time.Millisecond
 
+var spinnerFrames = []string{"·", "·", "✢", "✳", "✶", "✽", "✻", "✻", "✻", "✽", "✶", "✳", "✢", "·"}
+
+func computeSpinnerFrame() string {
+	ms := time.Now().UnixMilli()
+	return spinnerFrames[(ms/120)%int64(len(spinnerFrames))]
+}
+
 // emptyStateHash is precomputed once since it's a constant — avoids
 // recomputing SHA-256 on every idle syncOnce cycle.
 var emptyStateHash = stateHash(nil, nil, nil, nil, nil)
@@ -51,9 +58,12 @@ func main() {
 
 // syncer holds the mutable state threaded through successive syncOnce calls.
 type syncer struct {
-	socket        string
-	cachedPayload listPayload
-	hasCached     bool
+	socket               string
+	cachedPayload        listPayload
+	hasCached            bool
+	windowFlashStartedAt map[string]int64
+	flashPhaseCounter    int
+	flashTickCounter     int
 }
 
 // run parses flags, sets up fsnotify and signal handling, and enters the main sync loop.
@@ -314,18 +324,74 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 
 	state, nextSeenAtByWindow := buildFlashState(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds)
 
+	// Persist window flash for the full grace period once started,
+	// but only while the window still has waiting panes.
+	if s.windowFlashStartedAt == nil {
+		s.windowFlashStartedAt = map[string]int64{}
+	}
+	for windowID := range windows {
+		if state.WaitingWindows[windowID] == 0 {
+			delete(s.windowFlashStartedAt, windowID)
+			continue
+		}
+		if state.WindowsFlashing[windowID] {
+			if _, tracked := s.windowFlashStartedAt[windowID]; !tracked {
+				s.windowFlashStartedAt[windowID] = nowUnix
+			}
+		}
+		if startedAt, tracked := s.windowFlashStartedAt[windowID]; tracked {
+			if nowUnix-startedAt < flashGraceSeconds {
+				state.WindowsFlashing[windowID] = true
+			} else {
+				delete(s.windowFlashStartedAt, windowID)
+			}
+		}
+	}
+
+	windowStates := computeWindowStates(state.StatefulPanes, paneToWindow)
+
 	nextStateHash := stateHash(state.StatefulPanes, state.WaitingPanes, state.WaitingWindows, state.WindowsFlashing, state.PanesFlashing)
 	currentStateHash := globals["@ai_attn_state_hash"]
 
+	anyWindowFlashing := false
+	for _, flashing := range state.WindowsFlashing {
+		if flashing {
+			anyWindowFlashing = true
+			break
+		}
+	}
+
+	hasWorkingPane := false
+	for _, rec := range state.StatefulPanes {
+		if rec.State == "working" {
+			hasWorkingPane = true
+			break
+		}
+	}
+
+	needsFlashToggle := len(state.WaitingPanes) > 0 || anyWindowFlashing
 	nextFlashPhase := "0"
-	if len(state.WaitingPanes) > 0 {
-		nextFlashPhase = strconv.Itoa(int(time.Now().Unix() % 2))
+	if needsFlashToggle {
+		// When the tick rate is 120ms (working pane active), only toggle
+		// the flash phase every 4th tick to maintain ~480ms cadence.
+		s.flashTickCounter++
+		if !hasWorkingPane || s.flashTickCounter%4 == 0 {
+			s.flashPhaseCounter++
+		}
+		nextFlashPhase = strconv.Itoa(s.flashPhaseCounter % 2)
+	} else {
+		s.flashTickCounter = 0
 	}
 	currentFlashPhase := globals["@ai_attn_flash_phase"]
 
+	spinnerFrame := ""
+	if hasWorkingPane {
+		spinnerFrame = computeSpinnerFrame()
+	}
+
 	clearingStaleError := refreshQuery && queryErr == nil && globals["@ai_attn_last_error"] != ""
 	visualChanged := nextStateHash != currentStateHash || nextFlashPhase != currentFlashPhase
-	if !visualChanged && !clearingStaleError {
+	if !visualChanged && !clearingStaleError && !hasWorkingPane {
 		return false, tickForState(state)
 	}
 
@@ -341,6 +407,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		batch = appendWindowOption(batch, windowID, "@ai_attn_window_waiting", boolString(count > 0))
 		batch = appendWindowOption(batch, windowID, "@ai_attn_window_waiting_count", strconv.Itoa(count))
 		batch = appendWindowOption(batch, windowID, "@ai_attn_window_flash", boolString(state.WindowsFlashing[windowID]))
+		batch = appendWindowOption(batch, windowID, "@ai_attn_window_state", windowStates[windowID])
 	}
 
 	for paneID := range panes {
@@ -359,6 +426,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	batch = appendGlobalOption(batch, "@ai_attn_waiting_windows", strconv.Itoa(len(state.WaitingWindows)))
 	batch = appendGlobalOption(batch, "@ai_attn_flash_phase", nextFlashPhase)
 	batch = appendGlobalOption(batch, "@ai_attn_state_hash", nextStateHash)
+	batch = appendGlobalOption(batch, "@ai_attn_spinner_frame", spinnerFrame)
 
 	if err := tmuxBatch(s.socket, batch); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -372,21 +440,38 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	return false, tickForState(state)
 }
 
+// computeWindowStates computes the highest-priority state per window
+// from the set of stateful panes. Priority: waiting > stopped > working > done.
+func computeWindowStates(statefulPanes map[string]record, paneToWindow map[string]string) map[string]string {
+	priority := map[string]int{"waiting": 4, "stopped": 3, "working": 2, "done": 1}
+	states := map[string]string{}
+	for paneID, item := range statefulPanes {
+		windowID := paneToWindow[paneID]
+		if priority[item.State] > priority[states[windowID]] {
+			states[windowID] = item.State
+		}
+	}
+	return states
+}
+
 // tickForState returns the display tick interval based on active states.
-// Flashing panes need 1s for the flash animation, waiting/done panes need
-// 10s for age text updates, and idle needs no ticking at all.
-// "working" panes without active flash don't need any ticking since
-// their display data doesn't change between state transitions.
+// Working panes need 120ms for spinner animation, flashing panes need 480ms
+// for flash animation, other stateful panes need 10s for age text updates,
+// and idle needs no ticking at all.
 func tickForState(state flashState) time.Duration {
-	// If any pane or window is flashing, we need 1s ticks for animation.
+	for _, rec := range state.StatefulPanes {
+		if rec.State == "working" {
+			return 120 * time.Millisecond
+		}
+	}
 	for _, flashing := range state.PanesFlashing {
 		if flashing {
-			return 1 * time.Second
+			return 480 * time.Millisecond
 		}
 	}
 	for _, flashing := range state.WindowsFlashing {
 		if flashing {
-			return 1 * time.Second
+			return 480 * time.Millisecond
 		}
 	}
 	if len(state.StatefulPanes) > 0 {
@@ -630,7 +715,7 @@ func clearAllAttnOptions(socket string) {
 		switch name {
 		case "@ai_attn_cli", "@ai_attn_version",
 			"@ai_attn_seen_flash_seconds", "@ai_attn_refresh_client",
-			"@ai_attn_dev_build":
+			"@ai_attn_dev_build", "@ai_attn_enable_default_formats":
 			continue
 		}
 		batch = appendGlobalOption(batch, name, "")
@@ -657,6 +742,7 @@ func clearAllAttnOptions(socket string) {
 				batch = appendWindowOption(batch, windowID, "@ai_attn_window_waiting", "0")
 				batch = appendWindowOption(batch, windowID, "@ai_attn_window_waiting_count", "0")
 				batch = appendWindowOption(batch, windowID, "@ai_attn_window_flash", "0")
+				batch = appendWindowOption(batch, windowID, "@ai_attn_window_state", "")
 			}
 		}
 	}
