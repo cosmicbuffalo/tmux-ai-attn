@@ -11,7 +11,8 @@ existing="$(tmux show-options -gq 2>/dev/null || true)"
 set_default_option() {
   local name="$1"
   local value="$2"
-  if ! printf '%s\n' "$existing" | grep -q "^${name} "; then
+  # Match option with a non-empty value (skip empty '' left by clearAllAttnOptions).
+  if ! printf '%s\n' "$existing" | grep -q "^${name} [^']"; then
     DEFAULT_BATCH+=("set-option" "-gq" "$name" "$value" ";")
   fi
 }
@@ -23,6 +24,19 @@ set_default_option @ai_attn_dev_build "off"
 set_default_option @ai_attn_seen_flash_seconds "3"
 set_default_option @ai_attn_enable_default_formats "off"
 set_default_option @ai_attn_refresh_client "on"
+set_default_option @ai_attn_icon_waiting "⚠"
+set_default_option @ai_attn_icon_stopped "⏸"
+set_default_option @ai_attn_icon_done "✓"
+set_default_option @ai_attn_color_waiting "yellow"
+set_default_option @ai_attn_color_stopped "colour196"
+set_default_option @ai_attn_color_working "#d88786"
+set_default_option @ai_attn_color_done "green"
+set_default_option @ai_attn_color_flash_bg "colour226"
+set_default_option @ai_attn_color_flash_fg "colour16"
+set_default_option @ai_attn_color_text_fg "colour255"
+set_default_option @ai_attn_spinner_frames "·,·,✢,✳,✶,✽,✻,✻,✻,✽,✶,✳,✢,·"
+set_default_option @ai_attn_tick_ms "120"
+set_default_option @ai_attn_flash_multiplier "4"
 
 if [ ${#DEFAULT_BATCH[@]} -gt 0 ]; then
   # Remove trailing ";"

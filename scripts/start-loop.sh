@@ -13,12 +13,18 @@ if [ -z "$SOCKET" ]; then
 fi
 
 # Check that ai-attn is available before launching the daemon.
+# Auto-install if missing and curl is available.
 AI_ATTN_CLI="$(tmux show-option -gqv @ai_attn_cli 2>/dev/null || true)"
 AI_ATTN_CLI="${AI_ATTN_CLI:-ai-attn}"
 if ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
-  tmux set-option -gq @ai_attn_last_error \
-    "ai-attn not found. Install: curl -fsSL https://raw.githubusercontent.com/cosmicbuffalo/ai-attn/main/install.sh | bash"
-  exit 0
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://raw.githubusercontent.com/cosmicbuffalo/ai-attn/main/install.sh | bash >/dev/null 2>&1 || true
+  fi
+  if ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
+    tmux set-option -gq @ai_attn_last_error \
+      "ai-attn not found. Install: curl -fsSL https://raw.githubusercontent.com/cosmicbuffalo/ai-attn/main/install.sh | bash"
+    exit 0
+  fi
 fi
 
 if ! "$CURRENT_DIR/scripts/ensure-binary.sh" "$CURRENT_DIR"; then

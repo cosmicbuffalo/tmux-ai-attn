@@ -149,6 +149,53 @@ set -g @ai_attn_seen_flash_seconds "3"
 set -g @ai_attn_refresh_client "on"
 ```
 
+### Icons and Colors
+
+Customize the indicator icons and colors. The daemon reads these on every sync cycle, so changes take effect immediately — no reload needed.
+
+```tmux
+# Icons for each state (the working state uses a spinner animation instead).
+set -g @ai_attn_icon_waiting "⚠"
+set -g @ai_attn_icon_stopped "⏸"
+set -g @ai_attn_icon_done "✓"
+
+# Foreground colors for each state's indicator.
+set -g @ai_attn_color_waiting "yellow"
+set -g @ai_attn_color_stopped "colour196"
+set -g @ai_attn_color_working "#d88786"
+set -g @ai_attn_color_done "green"
+
+# Flash animation colors (background and text during flash).
+set -g @ai_attn_color_flash_bg "colour226"
+set -g @ai_attn_color_flash_fg "colour16"
+
+# Text foreground color after the indicator (should match your theme).
+set -g @ai_attn_color_text_fg "colour255"
+```
+
+### Spinner Frames
+
+The working state shows an animated spinner. Override the default animation with a comma-separated list of frames (minimum 2):
+
+```tmux
+set -g @ai_attn_spinner_frames "⠋,⠙,⠹,⠸,⠼,⠴,⠦,⠧,⠇,⠏"
+```
+
+The default frames are: `·,·,✢,✳,✶,✽,✻,✻,✻,✽,✶,✳,✢,·`
+
+### Animation Timing
+
+Control the base tick rate and flash cadence:
+
+```tmux
+# Base tick interval in milliseconds when a working pane is active (spinner refresh rate).
+set -g @ai_attn_tick_ms "120"
+
+# Flash phase toggles every N ticks. Default 4 means flash alternates every
+# 4 × 120ms = 480ms. Increase for slower flashing, decrease for faster.
+set -g @ai_attn_flash_multiplier "4"
+```
+
 ### Upgrading
 
 The helper binary version is pinned by the `VERSION` file in this repo. To upgrade the helper, update the plugin via TPM (`prefix + U`) — TPM pulls the new commit, the new `VERSION` is read, and `ensure-binary.sh` downloads the matching binary on the next tmux reload.
@@ -164,7 +211,8 @@ The plugin writes these tmux user options on each sync cycle. Use them in your f
 | `@ai_attn_any_waiting` | `0` / `1` | Whether any pane in the session is waiting for attention. |
 | `@ai_attn_waiting_panes` | integer | Number of panes currently waiting. |
 | `@ai_attn_waiting_windows` | integer | Number of windows containing at least one waiting pane. |
-| `@ai_attn_flash_phase` | `0` / `1` | Alternates every second while any pane is waiting. Use in format strings to create a flashing effect. |
+| `@ai_attn_flash_phase` | `0` / `1` | Alternates on each sync tick (~480ms) while any pane is waiting or any window is flashing. Use in format strings to create a flashing effect. |
+| `@ai_attn_spinner_frame` | string | Current spinner animation frame character. Updated at ~120ms intervals when any pane is in `working` state. Empty when no pane is working. |
 | `@ai_attn_last_error` | string | Empty on success. Contains the error message if `ai-attn` or tmux communication failed on the last sync. |
 | `@ai_attn_state_hash` | string | Internal. Used to skip redundant updates when state has not changed. |
 
@@ -175,6 +223,8 @@ The plugin writes these tmux user options on each sync cycle. Use them in your f
 | `@ai_attn_window_waiting` | `0` / `1` | Whether this window contains any waiting panes. |
 | `@ai_attn_window_waiting_count` | integer | Number of waiting panes in this window. |
 | `@ai_attn_window_flash` | `0` / `1` | Transient flag. Set to `1` when a new attention signal arrives and the window has not yet been acknowledged. Stays `1` for background windows until the user switches to them. For the active window, stays `1` for `@ai_attn_seen_flash_seconds` then auto-clears. |
+| `@ai_attn_window_state` | string | Aggregate state of the window: the highest-priority state among all panes (`waiting` > `working` > `stopped` > `done`). Empty when idle. |
+| `@ai_attn_window_segment` | string | Pre-rendered tmux format string containing the indicator (flash bg, state icon with color, text fg reset). Use with `#{E:@ai_attn_window_segment}` in your format strings — the `E:` prefix expands the embedded style sequences. Colors and icons are controlled by the `@ai_attn_color_*` and `@ai_attn_icon_*` options. |
 
 ### Per-pane options
 
@@ -195,13 +245,27 @@ Use state/waiting flags for steady-state indicators (e.g., a colored window tab)
 
 ## Styling Examples
 
-### Window tab styling
+### Window tab styling (using pre-rendered segment)
 
-Use `@ai_attn_window_flash` with `@ai_attn_flash_phase` for a flashing effect on unseen attention, and `@ai_attn_window_waiting` for a steady indicator.
+The easiest approach: use `#{E:@ai_attn_window_segment}` to drop in the indicator. The daemon pre-renders the flash background, state icon, and text color reset. You just place it between your tab's index and window name:
 
 ```tmux
-set -g status-interval 1
+set -g window-status-format '\
+#[fg=colour214,bg=colour235] #I \
+#[fg=colour255,bg=colour236]#{E:@ai_attn_window_segment}\
+#W #[default]'
 
+set -g window-status-current-format '\
+#[fg=black,bg=colour214] #I \
+#[fg=colour255,bg=colour238]#{E:@ai_attn_window_segment}\
+#W #[default]'
+```
+
+### Window tab styling (manual)
+
+For full control, use the raw flags directly. Use `@ai_attn_window_flash` with `@ai_attn_flash_phase` for a flashing effect, and `@ai_attn_window_state` for per-state icons:
+
+```tmux
 # Flashing for unseen signals, steady color for acknowledged but still waiting:
 set -g window-status-format '\
 #{?@ai_attn_window_flash,\
@@ -238,10 +302,11 @@ set -g status-right '\
 
 1. On plugin load (`tmux-ai-attn.tmux`), default options are set and a long-running helper binary (`tmux-ai-attn-sync`) is launched in the background.
 2. The binary watches the ai-attn state directory for changes via filesystem notifications (inotify on Linux, kqueue on macOS). When a state file changes, it refreshes from `ai-attn list --json` (with a 5-second timeout) and caches the resulting records.
-3. It maps `ai-attn` records to tmux panes and windows, computes waiting/flash state, and writes all tmux user options in batched tmux calls for efficiency.
-4. If the visual state has not changed since the last sync, no tmux writes are performed.
-5. Display-only ticks reuse the cached records, so age text and flash animation updates do not need to respawn `ai-attn` on every timer tick.
-6. The binary self-terminates when the tmux server exits (all sessions closed) and cleans up its PID file.
+3. It maps `ai-attn` records to tmux panes and windows, computes waiting/flash state, aggregates per-window state (priority: `waiting` > `working` > `stopped` > `done`), and pre-renders a `@ai_attn_window_segment` option with the indicator styles for each window.
+4. When any pane is in `working` state, the daemon ticks at ~120ms to drive spinner animation. Flash animation toggles at a configurable multiple of the tick rate (default 4×, giving ~480ms cadence). When only stateful but non-working panes exist, the tick drops to 10s.
+5. If the visual state has not changed since the last sync, no tmux writes are performed (except during spinner animation, which updates every tick).
+6. Display-only ticks reuse the cached records, so age text and flash animation updates do not need to respawn `ai-attn` on every timer tick.
+7. The binary self-terminates when the tmux server exits (all sessions closed) and cleans up its PID file.
 
 ### Signal path
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 — 2026-05-11
+
+- Spinner animation for working panes — cycles through configurable frames at the tick rate, giving visual feedback that the agent is actively processing
+- Pre-rendered `@ai_attn_window_segment` option containing icon, color, and flash state for easy status-line integration via `#{E:@ai_attn_window_segment}`
+- Window state aggregation via `@ai_attn_window_state` — rolls up per-pane states with priority: waiting > working > stopped > done
+- Configurable icons (`@ai_attn_icon_waiting`, `@ai_attn_icon_stopped`, `@ai_attn_icon_done`), colors (`@ai_attn_color_*`), spinner frames (`@ai_attn_spinner_frames`), tick rate (`@ai_attn_tick_ms`), and flash multiplier (`@ai_attn_flash_multiplier`)
+- Faster flash animation (480ms cadence, up from 1s) using counter-based phase toggling instead of wall-clock derivation
+- Reload resilience: `tmux source-file` no longer accumulates duplicate hooks — old plugin hooks are cleared before re-registering
+- Daemon restart on plugin reload via `--restart` flag, so config changes take effect immediately
+- Auto-install of ai-attn CLI if missing when the tmux plugin starts
+- Fixed flock file descriptor leak to child daemon process (`9>&-`)
+- Fixed `set_default_option` not re-applying defaults after daemon shutdown cleared options to empty strings
+
 ## 0.1.0 — 2026-05-02
 
 - Long-running Go daemon (`tmux-ai-attn-sync`) watches ai-attn state files via filesystem notifications and synchronizes attention state to tmux user options

@@ -207,7 +207,7 @@ func TestTickForStateFlashingWithWorkingReturns120ms(t *testing.T) {
 			"%2": true,
 		},
 	}
-	got := tickForState(state)
+	got := tickForState(state, 120, 4)
 	if got != 120*time.Millisecond {
 		t.Fatalf("expected 120ms tick when working+flashing, got %v", got)
 	}
@@ -222,7 +222,7 @@ func TestTickForStateWorkingOnlyReturns120ms(t *testing.T) {
 		},
 		PanesFlashing: map[string]bool{},
 	}
-	got := tickForState(state)
+	got := tickForState(state, 120, 4)
 	if got != 120*time.Millisecond {
 		t.Fatalf("expected 120ms tick for working state (spinner), got %v", got)
 	}
@@ -236,7 +236,7 @@ func TestTickForStateWaitingReturns10s(t *testing.T) {
 			"%1": {State: "waiting", Agent: "claude"},
 		},
 	}
-	got := tickForState(state)
+	got := tickForState(state, 120, 4)
 	if got != 10*time.Second {
 		t.Fatalf("expected 10s tick for waiting state, got %v", got)
 	}
@@ -250,7 +250,7 @@ func TestTickForStateDoneReturns10s(t *testing.T) {
 			"%1": {State: "done", Agent: "claude"},
 		},
 	}
-	got := tickForState(state)
+	got := tickForState(state, 120, 4)
 	if got != 10*time.Second {
 		t.Fatalf("expected 10s tick for done state, got %v", got)
 	}
@@ -262,7 +262,7 @@ func TestTickForStateIdleReturnsZero(t *testing.T) {
 	state := flashState{
 		StatefulPanes: map[string]record{},
 	}
-	got := tickForState(state)
+	got := tickForState(state, 120, 4)
 	if got != 0 {
 		t.Fatalf("expected 0 tick for idle state, got %v", got)
 	}
@@ -652,7 +652,7 @@ func TestTickForStateWindowFlashOnly(t *testing.T) {
 		PanesFlashing:   map[string]bool{},
 		WindowsFlashing: map[string]bool{"@1": true},
 	}
-	got := tickForState(state)
+	got := tickForState(state, 120, 4)
 	if got != 480*time.Millisecond {
 		t.Fatalf("expected 480ms tick for window-only flash, got %v", got)
 	}
@@ -664,10 +664,34 @@ func TestTickForStateWindowFlashOnly(t *testing.T) {
 
 // TestComputeSpinnerFrame verifies that computeSpinnerFrame returns a valid frame.
 func TestComputeSpinnerFrame(t *testing.T) {
-	frame := computeSpinnerFrame()
+	frame := computeSpinnerFrame(defaultSpinnerFrames)
 	valid := map[string]bool{"·": true, "✢": true, "✳": true, "✶": true, "✽": true, "✻": true}
 	if !valid[frame] {
 		t.Fatalf("computeSpinnerFrame returned unexpected frame %q", frame)
+	}
+}
+
+// TestParseSpinnerFramesDefault verifies default frames when option is unset.
+func TestParseSpinnerFramesDefault(t *testing.T) {
+	frames := parseSpinnerFrames(map[string]string{})
+	if len(frames) != len(defaultSpinnerFrames) {
+		t.Fatalf("expected %d default frames, got %d", len(defaultSpinnerFrames), len(frames))
+	}
+}
+
+// TestParseSpinnerFramesCustom verifies custom comma-separated frames.
+func TestParseSpinnerFramesCustom(t *testing.T) {
+	frames := parseSpinnerFrames(map[string]string{"@ai_attn_spinner_frames": "A,B,C"})
+	if len(frames) != 3 || frames[0] != "A" || frames[1] != "B" || frames[2] != "C" {
+		t.Fatalf("expected [A B C], got %v", frames)
+	}
+}
+
+// TestParseSpinnerFramesSingleFallsBack verifies single-frame input falls back to default.
+func TestParseSpinnerFramesSingleFallsBack(t *testing.T) {
+	frames := parseSpinnerFrames(map[string]string{"@ai_attn_spinner_frames": "X"})
+	if len(frames) != len(defaultSpinnerFrames) {
+		t.Fatalf("expected default frames for single-frame input, got %d", len(frames))
 	}
 }
 
@@ -680,7 +704,7 @@ func TestTickForStateFlashOnlyReturns480ms(t *testing.T) {
 		},
 		PanesFlashing: map[string]bool{"%1": true},
 	}
-	got := tickForState(state)
+	got := tickForState(state, 120, 4)
 	if got != 480*time.Millisecond {
 		t.Fatalf("expected 480ms tick for flash-only, got %v", got)
 	}
@@ -740,8 +764,8 @@ func TestComputeWindowStatesWaitingWins(t *testing.T) {
 	}
 }
 
-// TestComputeWindowStatesStoppedBeatsWorking verifies stopped beats working and done.
-func TestComputeWindowStatesStoppedBeatsWorking(t *testing.T) {
+// TestComputeWindowStatesWorkingBeatsStopped verifies working beats stopped and done.
+func TestComputeWindowStatesWorkingBeatsStopped(t *testing.T) {
 	panes := map[string]record{
 		"%1": {State: "working"},
 		"%2": {State: "stopped"},
@@ -749,8 +773,8 @@ func TestComputeWindowStatesStoppedBeatsWorking(t *testing.T) {
 	}
 	paneToWindow := map[string]string{"%1": "@1", "%2": "@1", "%3": "@1"}
 	states := computeWindowStates(panes, paneToWindow)
-	if states["@1"] != "stopped" {
-		t.Fatalf("expected window state=stopped, got %s", states["@1"])
+	if states["@1"] != "working" {
+		t.Fatalf("expected window state=working, got %s", states["@1"])
 	}
 }
 
@@ -801,6 +825,121 @@ func TestComputeWindowStatesMultipleWindows(t *testing.T) {
 	}
 	if states["@2"] != "waiting" {
 		t.Fatalf("expected window @2 state=waiting, got %s", states["@2"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderWindowSegment tests
+// ---------------------------------------------------------------------------
+
+func defaultSegmentConfig() segmentConfig {
+	return parseSegmentConfig(map[string]string{})
+}
+
+func TestRenderWindowSegmentEmpty(t *testing.T) {
+	got := renderWindowSegment("", false, "0", "", defaultSegmentConfig())
+	if got != "" {
+		t.Fatalf("expected empty segment for empty state, got %q", got)
+	}
+}
+
+func TestRenderWindowSegmentWaitingNoFlash(t *testing.T) {
+	cfg := defaultSegmentConfig()
+	got := renderWindowSegment("waiting", false, "0", "", cfg)
+	if !strings.Contains(got, "⚠") {
+		t.Fatalf("expected waiting icon, got %q", got)
+	}
+	if !strings.Contains(got, "fg=yellow") {
+		t.Fatalf("expected yellow fg for waiting, got %q", got)
+	}
+	if strings.Contains(got, "bg=colour226") {
+		t.Fatalf("expected no flash bg when not flashing, got %q", got)
+	}
+}
+
+func TestRenderWindowSegmentWorkingNoFlash(t *testing.T) {
+	cfg := defaultSegmentConfig()
+	got := renderWindowSegment("working", false, "0", "✻", cfg)
+	if !strings.Contains(got, "✻") {
+		t.Fatalf("expected spinner frame, got %q", got)
+	}
+	if !strings.Contains(got, "fg=#d88786") {
+		t.Fatalf("expected working color, got %q", got)
+	}
+}
+
+func TestRenderWindowSegmentStoppedNoFlash(t *testing.T) {
+	cfg := defaultSegmentConfig()
+	got := renderWindowSegment("stopped", false, "0", "", cfg)
+	if !strings.Contains(got, "⏸") {
+		t.Fatalf("expected stopped icon, got %q", got)
+	}
+	if !strings.Contains(got, "fg=colour196") {
+		t.Fatalf("expected stopped color, got %q", got)
+	}
+}
+
+func TestRenderWindowSegmentDoneNoFlash(t *testing.T) {
+	cfg := defaultSegmentConfig()
+	got := renderWindowSegment("done", false, "0", "", cfg)
+	if !strings.Contains(got, "✓") {
+		t.Fatalf("expected done icon, got %q", got)
+	}
+	if !strings.Contains(got, "fg=green") {
+		t.Fatalf("expected done color, got %q", got)
+	}
+}
+
+func TestRenderWindowSegmentFlashPhase1(t *testing.T) {
+	cfg := defaultSegmentConfig()
+	got := renderWindowSegment("waiting", true, "1", "", cfg)
+	if !strings.Contains(got, "bg=colour226") {
+		t.Fatalf("expected flash bg during phase 1, got %q", got)
+	}
+	if !strings.Contains(got, "fg=colour16") {
+		t.Fatalf("expected flash fg during phase 1, got %q", got)
+	}
+	if strings.Contains(got, "fg=yellow") {
+		t.Fatalf("expected icon color suppressed during flash phase 1, got %q", got)
+	}
+}
+
+func TestRenderWindowSegmentFlashPhase0(t *testing.T) {
+	cfg := defaultSegmentConfig()
+	got := renderWindowSegment("waiting", true, "0", "", cfg)
+	if strings.Contains(got, "bg=colour226") {
+		t.Fatalf("expected no flash bg during phase 0, got %q", got)
+	}
+	if !strings.Contains(got, "fg=yellow") {
+		t.Fatalf("expected normal icon color during flash phase 0, got %q", got)
+	}
+}
+
+func TestRenderWindowSegmentCustomColors(t *testing.T) {
+	cfg := segmentConfig{
+		iconWaiting:  "!",
+		colorWaiting: "red",
+		colorFlashBg: "blue",
+		colorFlashFg: "white",
+		colorTextFg:  "grey",
+	}
+	got := renderWindowSegment("waiting", false, "0", "", cfg)
+	if !strings.Contains(got, "!") {
+		t.Fatalf("expected custom icon, got %q", got)
+	}
+	if !strings.Contains(got, "fg=red") {
+		t.Fatalf("expected custom color, got %q", got)
+	}
+	if !strings.Contains(got, "fg=grey") {
+		t.Fatalf("expected custom text fg, got %q", got)
+	}
+}
+
+func TestRenderWindowSegmentTextFgReset(t *testing.T) {
+	cfg := defaultSegmentConfig()
+	got := renderWindowSegment("done", false, "0", "", cfg)
+	if !strings.Contains(got, "fg=colour255") {
+		t.Fatalf("expected text fg reset at end, got %q", got)
 	}
 }
 
