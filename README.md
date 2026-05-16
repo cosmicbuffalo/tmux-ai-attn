@@ -13,7 +13,7 @@ It separates persistent waiting state from transient flash state, so you can bui
 
 ## Requirements
 
-- tmux 3.0 or later
+- tmux 3.5 or later (earlier 3.x versions are unsupported; the reload-safe hook and option handling depends on tmux 3.5's `show-options`/`show-hooks` output)
 - [`ai-attn`](https://github.com/cosmicbuffalo/ai-attn) installed and on `PATH` (or configured via `@ai_attn_cli`)
 - `curl` or `wget` (for downloading the prebuilt helper binary)
 
@@ -24,6 +24,14 @@ If `ai-attn` is not installed when the plugin loads, it will set `@ai_attn_last_
 ```bash
 tmux show-option -gqv @ai_attn_last_error
 ```
+
+To have the plugin install `ai-attn` for you when it's missing, opt in by setting:
+
+```tmux
+set -g @ai_attn_auto_install "on"
+```
+
+The auto-installer fetches a pinned version of `ai-attn`'s `install.sh` from its release tag and pipes it to `bash`. It runs only when `ai-attn` is not on `PATH` and `@ai_attn_auto_install` is `on`; install failures are written to `@ai_attn_last_error` rather than swallowed. Defaults to `off` to avoid silent network execution.
 
 ## Install
 
@@ -147,6 +155,11 @@ set -g @ai_attn_seen_flash_seconds "3"
 
 # Force a tmux client redraw after each sync cycle that changes state.
 set -g @ai_attn_refresh_client "on"
+
+# Auto-install ai-attn via its pinned installer when missing.
+# Defaults to "off" — when "off", a missing CLI surfaces installation
+# instructions in @ai_attn_last_error instead of running anything.
+set -g @ai_attn_auto_install "off"
 ```
 
 ### Icons and Colors
@@ -175,13 +188,13 @@ set -g @ai_attn_color_text_fg "colour255"
 
 ### Spinner Frames
 
-The working state shows an animated spinner. Override the default animation with a comma-separated list of frames (minimum 2):
+The working state shows an animated spinner. Override the default animation with a comma-separated list of frames:
 
 ```tmux
 set -g @ai_attn_spinner_frames "⠋,⠙,⠹,⠸,⠼,⠴,⠦,⠧,⠇,⠏"
 ```
 
-The default frames are: `·,·,✢,✳,✶,✽,✻,✻,✻,✽,✶,✳,✢,·`
+A single frame is honored (effectively a static glyph for the working state). The default frames are: `·,·,✢,✳,✶,✽,✻,✻,✻,✽,✶,✳,✢,·`. Frame advancement follows `@ai_attn_tick_ms`, so the spinner stays in step regardless of the tick rate you choose.
 
 ### Animation Timing
 

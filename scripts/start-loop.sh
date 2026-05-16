@@ -13,16 +13,32 @@ if [ -z "$SOCKET" ]; then
 fi
 
 # Check that ai-attn is available before launching the daemon.
-# Auto-install if missing and curl is available.
+# When missing, optionally auto-install it via the pinned installer if the
+# user has explicitly opted in by setting @ai_attn_auto_install = "on".
 AI_ATTN_CLI="$(tmux show-option -gqv @ai_attn_cli 2>/dev/null || true)"
 AI_ATTN_CLI="${AI_ATTN_CLI:-ai-attn}"
+AI_ATTN_INSTALL_URL="https://raw.githubusercontent.com/cosmicbuffalo/ai-attn/v0.2.0/install.sh"
+INSTALL_HINT="ai-attn not found. Install: curl -fsSL ${AI_ATTN_INSTALL_URL} | bash (or set -g @ai_attn_auto_install \"on\")"
 if ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL https://raw.githubusercontent.com/cosmicbuffalo/ai-attn/main/install.sh | bash >/dev/null 2>&1 || true
-  fi
-  if ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
-    tmux set-option -gq @ai_attn_last_error \
-      "ai-attn not found. Install: curl -fsSL https://raw.githubusercontent.com/cosmicbuffalo/ai-attn/main/install.sh | bash"
+  AUTO_INSTALL="$(tmux show-option -gqv @ai_attn_auto_install 2>/dev/null || true)"
+  AUTO_INSTALL="${AUTO_INSTALL:-off}"
+  if [ "$AUTO_INSTALL" = "on" ]; then
+    if ! command -v curl >/dev/null 2>&1; then
+      tmux set-option -gq @ai_attn_last_error \
+        "ai-attn auto-install requires curl; install curl or install ai-attn manually"
+      exit 0
+    fi
+    install_log="$(curl -fsSL "$AI_ATTN_INSTALL_URL" 2>&1 | bash 2>&1)"
+    install_status=$?
+    if [ $install_status -ne 0 ] || ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
+      # Keep the error single-line for tmux's display-message; truncate noise.
+      first_err="$(printf '%s' "$install_log" | tr '\n' ' ' | cut -c 1-200)"
+      tmux set-option -gq @ai_attn_last_error \
+        "ai-attn auto-install failed${first_err:+: }${first_err}"
+      exit 0
+    fi
+  else
+    tmux set-option -gq @ai_attn_last_error "$INSTALL_HINT"
     exit 0
   fi
 fi

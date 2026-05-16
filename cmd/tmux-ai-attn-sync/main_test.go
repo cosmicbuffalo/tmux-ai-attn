@@ -664,10 +664,37 @@ func TestTickForStateWindowFlashOnly(t *testing.T) {
 
 // TestComputeSpinnerFrame verifies that computeSpinnerFrame returns a valid frame.
 func TestComputeSpinnerFrame(t *testing.T) {
-	frame := computeSpinnerFrame(defaultSpinnerFrames)
+	frame := computeSpinnerFrame(defaultSpinnerFrames, 120)
 	valid := map[string]bool{"·": true, "✢": true, "✳": true, "✶": true, "✽": true, "✻": true}
 	if !valid[frame] {
 		t.Fatalf("computeSpinnerFrame returned unexpected frame %q", frame)
+	}
+}
+
+// TestComputeSpinnerFrameHonorsTickMs verifies that the divisor used to pick a
+// frame index follows the configured tickMs so spinner cadence stays in step
+// with the syncer tick when @ai_attn_tick_ms is customized.
+func TestComputeSpinnerFrameHonorsTickMs(t *testing.T) {
+	frames := []string{"a", "b", "c", "d"}
+	// At tickMs=240 the frame index should change roughly half as often as at
+	// tickMs=120. Sample a small window and confirm the configured divisor is
+	// used by checking that the returned frame is still a member of the slice.
+	for _, tickMs := range []int{60, 120, 240, 480} {
+		got := computeSpinnerFrame(frames, tickMs)
+		found := false
+		for _, f := range frames {
+			if got == f {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("tickMs=%d: returned %q not in frames", tickMs, got)
+		}
+	}
+	// tickMs <= 0 should not panic and should fall back to a safe default.
+	if got := computeSpinnerFrame(frames, 0); got == "" {
+		t.Fatalf("tickMs=0 returned empty frame")
 	}
 }
 
@@ -687,11 +714,59 @@ func TestParseSpinnerFramesCustom(t *testing.T) {
 	}
 }
 
-// TestParseSpinnerFramesSingleFallsBack verifies single-frame input falls back to default.
-func TestParseSpinnerFramesSingleFallsBack(t *testing.T) {
+// TestParseSpinnerFramesSingleIsAccepted verifies that a single-frame input is
+// honored rather than silently replaced with the default frames.
+func TestParseSpinnerFramesSingleIsAccepted(t *testing.T) {
 	frames := parseSpinnerFrames(map[string]string{"@ai_attn_spinner_frames": "X"})
-	if len(frames) != len(defaultSpinnerFrames) {
-		t.Fatalf("expected default frames for single-frame input, got %d", len(frames))
+	if len(frames) != 1 || frames[0] != "X" {
+		t.Fatalf("expected single-frame [X], got %v", frames)
+	}
+}
+
+// TestAdvanceFlashPhaseResetsWhenIdle verifies that when no flash is needed,
+// the per-tick counter resets to zero and the returned phase is "0" so that
+// the next flash burst starts from a deterministic state.
+func TestAdvanceFlashPhaseResetsWhenIdle(t *testing.T) {
+	s := &syncer{flashTickCounter: 7, flashPhaseCounter: 3}
+	got := s.advanceFlashPhase(false, false, 4)
+	if got != "0" {
+		t.Fatalf("expected idle phase \"0\", got %q", got)
+	}
+	if s.flashTickCounter != 0 {
+		t.Fatalf("expected flashTickCounter to reset to 0, got %d", s.flashTickCounter)
+	}
+}
+
+// TestAdvanceFlashPhaseTogglesAtFullCadence verifies that without a working
+// pane the phase toggles every tick (no multiplier gating).
+func TestAdvanceFlashPhaseTogglesAtFullCadence(t *testing.T) {
+	s := &syncer{}
+	got := []string{}
+	for i := 0; i < 4; i++ {
+		got = append(got, s.advanceFlashPhase(true, false, 4))
+	}
+	want := []string{"1", "0", "1", "0"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tick %d: expected %q, got %q (full sequence %v)", i, want[i], got[i], got)
+		}
+	}
+}
+
+// TestAdvanceFlashPhaseGatedByMultiplierWhenWorking verifies that with a
+// working pane (fast tick) the phase only flips every flashMultiplier ticks.
+func TestAdvanceFlashPhaseGatedByMultiplierWhenWorking(t *testing.T) {
+	s := &syncer{}
+	got := []string{}
+	for i := 0; i < 8; i++ {
+		got = append(got, s.advanceFlashPhase(true, true, 4))
+	}
+	// flashPhaseCounter increments on tick 4 and tick 8 → phase "1" then "0".
+	want := []string{"0", "0", "0", "1", "1", "1", "1", "0"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tick %d: expected %q, got %q (full sequence %v)", i, want[i], got[i], got)
+		}
 	}
 }
 

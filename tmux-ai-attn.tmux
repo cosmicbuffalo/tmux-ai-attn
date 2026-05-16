@@ -21,6 +21,7 @@ DEFAULT_BATCH=()
 set_default_option @ai_attn_cli "ai-attn"
 set_default_option @ai_attn_version "$DEFAULT_VERSION"
 set_default_option @ai_attn_dev_build "off"
+set_default_option @ai_attn_auto_install "off"
 set_default_option @ai_attn_seen_flash_seconds "3"
 set_default_option @ai_attn_enable_default_formats "off"
 set_default_option @ai_attn_refresh_client "on"

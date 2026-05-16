@@ -137,15 +137,18 @@ func parseSpinnerFrames(globals map[string]string) []string {
 		return defaultSpinnerFrames
 	}
 	frames := strings.Split(v, ",")
-	if len(frames) < 2 {
+	if len(frames) < 1 {
 		return defaultSpinnerFrames
 	}
 	return frames
 }
 
-func computeSpinnerFrame(frames []string) string {
+func computeSpinnerFrame(frames []string, tickMs int) string {
+	if tickMs <= 0 {
+		tickMs = 120
+	}
 	ms := time.Now().UnixMilli()
-	return frames[(ms/120)%int64(len(frames))]
+	return frames[(ms/int64(tickMs))%int64(len(frames))]
 }
 
 // emptyStateHash is precomputed once since it's a constant — avoids
@@ -440,6 +443,13 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	if s.windowFlashStartedAt == nil {
 		s.windowFlashStartedAt = map[string]int64{}
 	}
+	// Drop entries for windows that no longer exist so the map can't grow
+	// unbounded across sessions with churning window IDs.
+	for windowID := range s.windowFlashStartedAt {
+		if _, ok := windows[windowID]; !ok {
+			delete(s.windowFlashStartedAt, windowID)
+		}
+	}
 	for windowID := range windows {
 		if state.WaitingWindows[windowID] == 0 {
 			delete(s.windowFlashStartedAt, windowID)
@@ -481,23 +491,12 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	}
 
 	needsFlashToggle := len(state.WaitingPanes) > 0 || anyWindowFlashing
-	nextFlashPhase := "0"
-	if needsFlashToggle {
-		// When the tick rate is 120ms (working pane active), only toggle
-		// the flash phase every 4th tick to maintain ~480ms cadence.
-		s.flashTickCounter++
-		if !hasWorkingPane || s.flashTickCounter%flashMultiplier == 0 {
-			s.flashPhaseCounter++
-		}
-		nextFlashPhase = strconv.Itoa(s.flashPhaseCounter % 2)
-	} else {
-		s.flashTickCounter = 0
-	}
+	nextFlashPhase := s.advanceFlashPhase(needsFlashToggle, hasWorkingPane, flashMultiplier)
 	currentFlashPhase := globals["@ai_attn_flash_phase"]
 
 	spinnerFrame := ""
 	if hasWorkingPane {
-		spinnerFrame = computeSpinnerFrame(spinFrames)
+		spinnerFrame = computeSpinnerFrame(spinFrames, tickMs)
 	}
 
 	clearingStaleError := refreshQuery && queryErr == nil && globals["@ai_attn_last_error"] != ""
@@ -551,6 +550,27 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	}
 
 	return false, tickForState(state, tickMs, flashMultiplier)
+}
+
+// advanceFlashPhase advances the flash-phase state machine by one tick and
+// returns the next phase ("0" or "1"). When a working pane is present the
+// syncer ticks at @ai_attn_tick_ms cadence; phase toggling is gated by
+// flashMultiplier so the flash animation stays at ~tickMs*flashMultiplier
+// regardless. When no flash is needed the per-tick counter resets so future
+// flash bursts start from a predictable phase.
+func (s *syncer) advanceFlashPhase(needsFlashToggle, hasWorkingPane bool, flashMultiplier int) string {
+	if !needsFlashToggle {
+		s.flashTickCounter = 0
+		return "0"
+	}
+	if flashMultiplier <= 0 {
+		flashMultiplier = 1
+	}
+	s.flashTickCounter++
+	if !hasWorkingPane || s.flashTickCounter%flashMultiplier == 0 {
+		s.flashPhaseCounter++
+	}
+	return strconv.Itoa(s.flashPhaseCounter % 2)
 }
 
 // computeWindowStates computes the highest-priority state per window
@@ -830,7 +850,8 @@ func clearAllAttnOptions(socket string) {
 		switch name {
 		case "@ai_attn_cli", "@ai_attn_version",
 			"@ai_attn_seen_flash_seconds", "@ai_attn_refresh_client",
-			"@ai_attn_dev_build", "@ai_attn_enable_default_formats",
+			"@ai_attn_dev_build", "@ai_attn_auto_install",
+			"@ai_attn_enable_default_formats",
 			"@ai_attn_icon_waiting", "@ai_attn_icon_stopped", "@ai_attn_icon_done",
 			"@ai_attn_color_waiting", "@ai_attn_color_stopped", "@ai_attn_color_working",
 			"@ai_attn_color_done", "@ai_attn_color_flash_bg", "@ai_attn_color_flash_fg",
