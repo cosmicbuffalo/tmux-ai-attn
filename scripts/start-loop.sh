@@ -28,9 +28,15 @@ if ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
         "ai-attn auto-install requires curl; install curl or install ai-attn manually"
       exit 0
     fi
+    # The script runs under `set -euo pipefail`. A failing curl or bash would
+    # otherwise kill the script before we get to surface @ai_attn_last_error,
+    # so neutralize errexit/pipefail around the install pipeline and restore
+    # them afterward.
+    set +e
     install_log="$(curl -fsSL "$AI_ATTN_INSTALL_URL" 2>&1 | bash 2>&1)"
     install_status=$?
-    if [ $install_status -ne 0 ] || ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
+    set -e
+    if [ "$install_status" -ne 0 ] || ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
       # Keep the error single-line for tmux's display-message; truncate noise.
       first_err="$(printf '%s' "$install_log" | tr '\n' ' ' | cut -c 1-200)"
       tmux set-option -gq @ai_attn_last_error \

@@ -136,8 +136,14 @@ func parseSpinnerFrames(globals map[string]string) []string {
 	if v == "" {
 		return defaultSpinnerFrames
 	}
-	frames := strings.Split(v, ",")
-	if len(frames) < 1 {
+	raw := strings.Split(v, ",")
+	frames := make([]string, 0, len(raw))
+	for _, f := range raw {
+		if f != "" {
+			frames = append(frames, f)
+		}
+	}
+	if len(frames) == 0 {
 		return defaultSpinnerFrames
 	}
 	return frames

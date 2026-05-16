@@ -11,8 +11,13 @@ existing="$(tmux show-options -gq 2>/dev/null || true)"
 set_default_option() {
   local name="$1"
   local value="$2"
-  # Match option with a non-empty value (skip empty '' left by clearAllAttnOptions).
-  if ! printf '%s\n' "$existing" | grep -q "^${name} [^']"; then
+  # Re-apply the default when the option is absent entirely, or when it has
+  # been reset to the explicit '' placeholder left by clearAllAttnOptions on
+  # daemon shutdown. Any other value (including values tmux renders quoted
+  # due to whitespace or multibyte characters) is treated as user-configured
+  # and preserved.
+  if ! printf '%s\n' "$existing" | grep -q "^${name} " \
+     || printf '%s\n' "$existing" | grep -qE "^${name} ''\$"; then
     DEFAULT_BATCH+=("set-option" "-gq" "$name" "$value" ";")
   fi
 }
@@ -58,19 +63,22 @@ clear_plugin_hooks() {
     return
   fi
   # Collect lines for this hook event, keeping non-plugin ones.
+  # tmux 3.5+ always emits hooks in the array form "hook[N] cmd", but older
+  # tmux versions emit a single non-appending hook as "hook cmd" (no [N]).
+  # Match both forms so a user-defined single hook isn't silently dropped
+  # by the subsequent `set-hook -gu`.
   local others=()
+  local cmd
   while IFS= read -r line; do
     [ -z "$line" ] && continue
-    # Lines look like: hook-name[N] run-shell ...
     case "$line" in
-      "${hook}["*) ;;
+      "${hook}["*) cmd="${line#*] }" ;;
+      "${hook} "*) cmd="${line#"${hook}" }" ;;
       *) continue ;;
     esac
     if printf '%s' "$line" | grep -Fq "$CURRENT_DIR"; then
       continue
     fi
-    # Extract the command part after "hook[N] "
-    local cmd="${line#*] }"
     others+=("$cmd")
   done <<< "$raw"
   # Unset and re-add non-plugin hooks.

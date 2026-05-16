@@ -723,6 +723,21 @@ func TestParseSpinnerFramesSingleIsAccepted(t *testing.T) {
 	}
 }
 
+// TestParseSpinnerFramesFiltersEmpty verifies that empty entries (e.g. from
+// a trailing comma or "," alone) are dropped, and that an input that contains
+// only empty fields falls back to the default frame set rather than rendering
+// blank spinner glyphs.
+func TestParseSpinnerFramesFiltersEmpty(t *testing.T) {
+	frames := parseSpinnerFrames(map[string]string{"@ai_attn_spinner_frames": "A,,B,"})
+	if len(frames) != 2 || frames[0] != "A" || frames[1] != "B" {
+		t.Fatalf("expected [A B] after filtering empty entries, got %v", frames)
+	}
+	frames = parseSpinnerFrames(map[string]string{"@ai_attn_spinner_frames": ","})
+	if len(frames) != len(defaultSpinnerFrames) {
+		t.Fatalf("expected default frames for empty-only input, got %v", frames)
+	}
+}
+
 // TestAdvanceFlashPhaseResetsWhenIdle verifies that when no flash is needed,
 // the per-tick counter resets to zero and the returned phase is "0" so that
 // the next flash burst starts from a deterministic state.
