@@ -25,14 +25,6 @@ If `ai-attn` is not installed when the plugin loads, it will set `@ai_attn_last_
 tmux show-option -gqv @ai_attn_last_error
 ```
 
-To have the plugin install `ai-attn` for you when it's missing, opt in by setting:
-
-```tmux
-set -g @ai_attn_auto_install "on"
-```
-
-The auto-installer fetches a pinned version of `ai-attn`'s `install.sh` from its release tag and pipes it to `bash`. It runs only when `ai-attn` is not on `PATH` and `@ai_attn_auto_install` is `on`; install failures are written to `@ai_attn_last_error` rather than swallowed. Defaults to `off` to avoid silent network execution.
-
 ## Install
 
 ### With TPM
@@ -155,11 +147,6 @@ set -g @ai_attn_seen_flash_seconds "3"
 
 # Force a tmux client redraw after each sync cycle that changes state.
 set -g @ai_attn_refresh_client "on"
-
-# Auto-install ai-attn via its pinned installer when missing.
-# Defaults to "off" — when "off", a missing CLI surfaces installation
-# instructions in @ai_attn_last_error instead of running anything.
-set -g @ai_attn_auto_install "off"
 ```
 
 ### Icons and Colors

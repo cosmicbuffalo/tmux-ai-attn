@@ -856,8 +856,7 @@ func clearAllAttnOptions(socket string) {
 		switch name {
 		case "@ai_attn_cli", "@ai_attn_version",
 			"@ai_attn_seen_flash_seconds", "@ai_attn_refresh_client",
-			"@ai_attn_dev_build", "@ai_attn_auto_install",
-			"@ai_attn_enable_default_formats",
+			"@ai_attn_dev_build", "@ai_attn_enable_default_formats",
 			"@ai_attn_icon_waiting", "@ai_attn_icon_stopped", "@ai_attn_icon_done",
 			"@ai_attn_color_waiting", "@ai_attn_color_stopped", "@ai_attn_color_working",
 			"@ai_attn_color_done", "@ai_attn_color_flash_bg", "@ai_attn_color_flash_fg",
