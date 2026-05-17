@@ -38,7 +38,124 @@ type flashState struct {
 	PanesFlashing   map[string]bool
 }
 
+type segmentConfig struct {
+	iconWaiting  string
+	iconStopped  string
+	iconDone     string
+	colorWaiting string
+	colorStopped string
+	colorWorking string
+	colorDone    string
+	colorFlashBg string
+	colorFlashFg string
+	colorTextFg  string
+}
+
+func optionOr(globals map[string]string, key, fallback string) string {
+	if v := globals[key]; v != "" {
+		return v
+	}
+	return fallback
+}
+
+func parseSegmentConfig(globals map[string]string) segmentConfig {
+	return segmentConfig{
+		iconWaiting:  optionOr(globals, "@ai_attn_icon_waiting", "⚠"),
+		iconStopped:  optionOr(globals, "@ai_attn_icon_stopped", "⏸"),
+		iconDone:     optionOr(globals, "@ai_attn_icon_done", "✓"),
+		colorWaiting: optionOr(globals, "@ai_attn_color_waiting", "yellow"),
+		colorStopped: optionOr(globals, "@ai_attn_color_stopped", "colour196"),
+		colorWorking: optionOr(globals, "@ai_attn_color_working", "#d88786"),
+		colorDone:    optionOr(globals, "@ai_attn_color_done", "green"),
+		colorFlashBg: optionOr(globals, "@ai_attn_color_flash_bg", "colour226"),
+		colorFlashFg: optionOr(globals, "@ai_attn_color_flash_fg", "colour16"),
+		colorTextFg:  optionOr(globals, "@ai_attn_color_text_fg", "colour255"),
+	}
+}
+
+func renderWindowSegment(windowState string, flashing bool, flashPhase string, spinnerFrame string, cfg segmentConfig) string {
+	if windowState == "" {
+		return ""
+	}
+	var b strings.Builder
+	isFlashOn := flashing && flashPhase == "1"
+
+	if isFlashOn {
+		b.WriteString("#[fg=")
+		b.WriteString(cfg.colorFlashFg)
+		b.WriteString("]#[bg=")
+		b.WriteString(cfg.colorFlashBg)
+		b.WriteString("] ")
+	} else {
+		b.WriteString(" ")
+	}
+
+	var iconColor, icon string
+	switch windowState {
+	case "waiting":
+		iconColor = cfg.colorWaiting
+		icon = cfg.iconWaiting
+	case "stopped":
+		iconColor = cfg.colorStopped
+		icon = cfg.iconStopped
+	case "working":
+		iconColor = cfg.colorWorking
+		icon = spinnerFrame
+	case "done":
+		iconColor = cfg.colorDone
+		icon = cfg.iconDone
+	}
+
+	if !isFlashOn {
+		b.WriteString("#[fg=")
+		b.WriteString(iconColor)
+		b.WriteString("]")
+	}
+	b.WriteString(icon)
+	b.WriteString(" ")
+
+	if isFlashOn {
+		b.WriteString("#[fg=")
+		b.WriteString(cfg.colorFlashFg)
+		b.WriteString("]")
+	} else {
+		b.WriteString("#[fg=")
+		b.WriteString(cfg.colorTextFg)
+		b.WriteString("]")
+	}
+
+	return b.String()
+}
+
 const debounceDuration = 50 * time.Millisecond
+
+var defaultSpinnerFrames = []string{"·", "·", "✢", "✳", "✶", "✽", "✻", "✻", "✻", "✽", "✶", "✳", "✢", "·"}
+
+func parseSpinnerFrames(globals map[string]string) []string {
+	v := globals["@ai_attn_spinner_frames"]
+	if v == "" {
+		return defaultSpinnerFrames
+	}
+	raw := strings.Split(v, ",")
+	frames := make([]string, 0, len(raw))
+	for _, f := range raw {
+		if f != "" {
+			frames = append(frames, f)
+		}
+	}
+	if len(frames) == 0 {
+		return defaultSpinnerFrames
+	}
+	return frames
+}
+
+func computeSpinnerFrame(frames []string, tickMs int) string {
+	if tickMs <= 0 {
+		tickMs = 120
+	}
+	ms := time.Now().UnixMilli()
+	return frames[(ms/int64(tickMs))%int64(len(frames))]
+}
 
 // emptyStateHash is precomputed once since it's a constant — avoids
 // recomputing SHA-256 on every idle syncOnce cycle.
@@ -51,9 +168,12 @@ func main() {
 
 // syncer holds the mutable state threaded through successive syncOnce calls.
 type syncer struct {
-	socket        string
-	cachedPayload listPayload
-	hasCached     bool
+	socket               string
+	cachedPayload        listPayload
+	hasCached            bool
+	windowFlashStartedAt map[string]int64
+	flashPhaseCounter    int
+	flashTickCounter     int
 }
 
 // run parses flags, sets up fsnotify and signal handling, and enters the main sync loop.
@@ -226,6 +346,16 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	if attnCLIPath == "" {
 		attnCLIPath = "ai-attn"
 	}
+	segCfg := parseSegmentConfig(globals)
+	spinFrames := parseSpinnerFrames(globals)
+	tickMs := 120
+	if v, parseErr := strconv.Atoi(globals["@ai_attn_tick_ms"]); parseErr == nil && v > 0 {
+		tickMs = v
+	}
+	flashMultiplier := 4
+	if v, parseErr := strconv.Atoi(globals["@ai_attn_flash_multiplier"]); parseErr == nil && v > 0 {
+		flashMultiplier = v
+	}
 	flashGraceSeconds := int64(3)
 	if v, parseErr := strconv.ParseInt(globals["@ai_attn_seen_flash_seconds"], 10, 64); parseErr == nil && v > 0 {
 		flashGraceSeconds = v
@@ -314,19 +444,71 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 
 	state, nextSeenAtByWindow := buildFlashState(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds)
 
+	// Persist window flash for the full grace period once started,
+	// but only while the window still has waiting panes.
+	if s.windowFlashStartedAt == nil {
+		s.windowFlashStartedAt = map[string]int64{}
+	}
+	// Drop entries for windows that no longer exist so the map can't grow
+	// unbounded across sessions with churning window IDs.
+	for windowID := range s.windowFlashStartedAt {
+		if _, ok := windows[windowID]; !ok {
+			delete(s.windowFlashStartedAt, windowID)
+		}
+	}
+	for windowID := range windows {
+		if state.WaitingWindows[windowID] == 0 {
+			delete(s.windowFlashStartedAt, windowID)
+			continue
+		}
+		if state.WindowsFlashing[windowID] {
+			if _, tracked := s.windowFlashStartedAt[windowID]; !tracked {
+				s.windowFlashStartedAt[windowID] = nowUnix
+			}
+		}
+		if startedAt, tracked := s.windowFlashStartedAt[windowID]; tracked {
+			if nowUnix-startedAt < flashGraceSeconds {
+				state.WindowsFlashing[windowID] = true
+			} else {
+				delete(s.windowFlashStartedAt, windowID)
+			}
+		}
+	}
+
+	windowStates := computeWindowStates(state.StatefulPanes, paneToWindow)
+
 	nextStateHash := stateHash(state.StatefulPanes, state.WaitingPanes, state.WaitingWindows, state.WindowsFlashing, state.PanesFlashing)
 	currentStateHash := globals["@ai_attn_state_hash"]
 
-	nextFlashPhase := "0"
-	if len(state.WaitingPanes) > 0 {
-		nextFlashPhase = strconv.Itoa(int(time.Now().Unix() % 2))
+	anyWindowFlashing := false
+	for _, flashing := range state.WindowsFlashing {
+		if flashing {
+			anyWindowFlashing = true
+			break
+		}
 	}
+
+	hasWorkingPane := false
+	for _, rec := range state.StatefulPanes {
+		if rec.State == "working" {
+			hasWorkingPane = true
+			break
+		}
+	}
+
+	needsFlashToggle := len(state.WaitingPanes) > 0 || anyWindowFlashing
+	nextFlashPhase := s.advanceFlashPhase(needsFlashToggle, hasWorkingPane, flashMultiplier)
 	currentFlashPhase := globals["@ai_attn_flash_phase"]
+
+	spinnerFrame := ""
+	if hasWorkingPane {
+		spinnerFrame = computeSpinnerFrame(spinFrames, tickMs)
+	}
 
 	clearingStaleError := refreshQuery && queryErr == nil && globals["@ai_attn_last_error"] != ""
 	visualChanged := nextStateHash != currentStateHash || nextFlashPhase != currentFlashPhase
-	if !visualChanged && !clearingStaleError {
-		return false, tickForState(state)
+	if !visualChanged && !clearingStaleError && !hasWorkingPane {
+		return false, tickForState(state, tickMs, flashMultiplier)
 	}
 
 	// Batch all updates into a single tmux call.
@@ -341,6 +523,9 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		batch = appendWindowOption(batch, windowID, "@ai_attn_window_waiting", boolString(count > 0))
 		batch = appendWindowOption(batch, windowID, "@ai_attn_window_waiting_count", strconv.Itoa(count))
 		batch = appendWindowOption(batch, windowID, "@ai_attn_window_flash", boolString(state.WindowsFlashing[windowID]))
+		batch = appendWindowOption(batch, windowID, "@ai_attn_window_state", windowStates[windowID])
+		segment := renderWindowSegment(windowStates[windowID], state.WindowsFlashing[windowID], nextFlashPhase, spinnerFrame, segCfg)
+		batch = appendWindowOption(batch, windowID, "@ai_attn_window_segment", segment)
 	}
 
 	for paneID := range panes {
@@ -359,6 +544,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	batch = appendGlobalOption(batch, "@ai_attn_waiting_windows", strconv.Itoa(len(state.WaitingWindows)))
 	batch = appendGlobalOption(batch, "@ai_attn_flash_phase", nextFlashPhase)
 	batch = appendGlobalOption(batch, "@ai_attn_state_hash", nextStateHash)
+	batch = appendGlobalOption(batch, "@ai_attn_spinner_frame", spinnerFrame)
 
 	if err := tmuxBatch(s.socket, batch); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -369,24 +555,64 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		}
 	}
 
-	return false, tickForState(state)
+	return false, tickForState(state, tickMs, flashMultiplier)
+}
+
+// advanceFlashPhase advances the flash-phase state machine by one tick and
+// returns the next phase ("0" or "1"). When a working pane is present the
+// syncer ticks at @ai_attn_tick_ms cadence; phase toggling is gated by
+// flashMultiplier so the flash animation stays at ~tickMs*flashMultiplier
+// regardless. When no flash is needed the per-tick counter resets so future
+// flash bursts start from a predictable phase.
+func (s *syncer) advanceFlashPhase(needsFlashToggle, hasWorkingPane bool, flashMultiplier int) string {
+	if !needsFlashToggle {
+		s.flashTickCounter = 0
+		return "0"
+	}
+	if flashMultiplier <= 0 {
+		flashMultiplier = 1
+	}
+	s.flashTickCounter++
+	if !hasWorkingPane || s.flashTickCounter%flashMultiplier == 0 {
+		s.flashPhaseCounter++
+	}
+	return strconv.Itoa(s.flashPhaseCounter % 2)
+}
+
+// computeWindowStates computes the highest-priority state per window
+// from the set of stateful panes. Priority: waiting > working > stopped > done.
+func computeWindowStates(statefulPanes map[string]record, paneToWindow map[string]string) map[string]string {
+	priority := map[string]int{"waiting": 4, "working": 3, "stopped": 2, "done": 1}
+	states := map[string]string{}
+	for paneID, item := range statefulPanes {
+		windowID := paneToWindow[paneID]
+		if priority[item.State] > priority[states[windowID]] {
+			states[windowID] = item.State
+		}
+	}
+	return states
 }
 
 // tickForState returns the display tick interval based on active states.
-// Flashing panes need 1s for the flash animation, waiting/done panes need
-// 10s for age text updates, and idle needs no ticking at all.
-// "working" panes without active flash don't need any ticking since
-// their display data doesn't change between state transitions.
-func tickForState(state flashState) time.Duration {
-	// If any pane or window is flashing, we need 1s ticks for animation.
+// Working panes tick at tickMs for spinner animation, flashing panes tick at
+// tickMs * flashMultiplier for flash animation, other stateful panes need 10s
+// for age text updates, and idle needs no ticking at all.
+func tickForState(state flashState, tickMs int, flashMultiplier int) time.Duration {
+	spinnerTick := time.Duration(tickMs) * time.Millisecond
+	flashTick := time.Duration(tickMs*flashMultiplier) * time.Millisecond
+	for _, rec := range state.StatefulPanes {
+		if rec.State == "working" {
+			return spinnerTick
+		}
+	}
 	for _, flashing := range state.PanesFlashing {
 		if flashing {
-			return 1 * time.Second
+			return flashTick
 		}
 	}
 	for _, flashing := range state.WindowsFlashing {
 		if flashing {
-			return 1 * time.Second
+			return flashTick
 		}
 	}
 	if len(state.StatefulPanes) > 0 {
@@ -630,7 +856,12 @@ func clearAllAttnOptions(socket string) {
 		switch name {
 		case "@ai_attn_cli", "@ai_attn_version",
 			"@ai_attn_seen_flash_seconds", "@ai_attn_refresh_client",
-			"@ai_attn_dev_build":
+			"@ai_attn_dev_build", "@ai_attn_enable_default_formats",
+			"@ai_attn_icon_waiting", "@ai_attn_icon_stopped", "@ai_attn_icon_done",
+			"@ai_attn_color_waiting", "@ai_attn_color_stopped", "@ai_attn_color_working",
+			"@ai_attn_color_done", "@ai_attn_color_flash_bg", "@ai_attn_color_flash_fg",
+			"@ai_attn_color_text_fg", "@ai_attn_spinner_frames",
+			"@ai_attn_tick_ms", "@ai_attn_flash_multiplier":
 			continue
 		}
 		batch = appendGlobalOption(batch, name, "")
@@ -657,6 +888,8 @@ func clearAllAttnOptions(socket string) {
 				batch = appendWindowOption(batch, windowID, "@ai_attn_window_waiting", "0")
 				batch = appendWindowOption(batch, windowID, "@ai_attn_window_waiting_count", "0")
 				batch = appendWindowOption(batch, windowID, "@ai_attn_window_flash", "0")
+				batch = appendWindowOption(batch, windowID, "@ai_attn_window_state", "")
+				batch = appendWindowOption(batch, windowID, "@ai_attn_window_segment", "")
 			}
 		}
 	}
