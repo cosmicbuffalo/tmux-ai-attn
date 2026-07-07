@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Update the missing-`ai-attn` install hint to the released `ai-attn` `v0.3.1` installer.
+- Document Codex `PreToolUse` and `PostToolUse` lifecycle hooks now reported by `ai-attn v0.3.1`; no daemon change is required because `tmux-ai-attn` already handles `working` records generically.
+
 ## 0.3.0 — 2026-07-07
 
 - Scope state records to their owning tmux server. A record carrying a `socket` field is ignored unless it matches this daemon's `--tmux-socket`. Fixes cross-server window flashing: a `pane_id` written by one tmux server was being matched against an unrelated pane with the same `%N` in another tmux server, lighting up the wrong window. Records without a `socket` (older `ai-attn`) still match any server, preserving prior behavior.

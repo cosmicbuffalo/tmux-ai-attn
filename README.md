@@ -14,7 +14,7 @@ It separates persistent waiting state from transient flash state, so you can bui
 ## Requirements
 
 - tmux 3.5 or later (earlier 3.x versions are unsupported; the reload-safe hook and option handling depends on tmux 3.5's `show-options`/`show-hooks` output)
-- [`ai-attn`](https://github.com/cosmicbuffalo/ai-attn) installed and on `PATH` (or configured via `@ai_attn_cli`)
+- [`ai-attn`](https://github.com/cosmicbuffalo/ai-attn) v0.3.1 or newer installed and on `PATH` (or configured via `@ai_attn_cli`)
 - `curl` or `wget` (for downloading the prebuilt helper binary)
 
 Go is **not** required for normal use. The plugin automatically downloads a prebuilt helper binary for your platform.
@@ -325,11 +325,11 @@ AI CLI hook  -->  ai-attn state dir  -->  ai-attn list --json
 
 The plugin uses the `pane_id` field from `ai-attn` records to determine which tmux pane to style. When a record also has `socket`, the plugin only applies it to the daemon watching that tmux server; records without `socket` are treated as legacy match-any records.
 
-### Codex permission prompts (terminal bell)
+### Codex permission prompts
 
-Codex's `notify` channel only emits `agent-turn-complete` in current versions, so mid-turn permission prompts never reach `ai-attn` through the normal hook path. Codex does emit an ASCII BEL on permission prompts, which tmux surfaces via the `alert-bell` hook.
+Current Codex lifecycle hooks can report `PermissionRequest`, `PreToolUse`, and `PostToolUse` events directly through `ai-attn` when `ai-attn setup codex` has installed `~/.codex/hooks.json` and the hooks are trusted in Codex.
 
-The plugin registers an `alert-bell` hook that filters to codex panes and writes a socket-scoped `waiting` ai-attn record when one rings. No configuration is required — other agents are unaffected because they have their own hook integrations that report waiting state directly. Bell events are logged to `${XDG_STATE_HOME:-~/.local/state}/tmux-ai-attn/bell-hook.log`.
+The plugin also registers an `alert-bell` hook that filters to codex panes and writes a socket-scoped `waiting` ai-attn record when one rings. This is a fallback for older or untrusted hook setups; other agents are unaffected because they report waiting state through their own integrations. Bell events are logged to `${XDG_STATE_HOME:-~/.local/state}/tmux-ai-attn/bell-hook.log`.
 
 ## Debugging
 
