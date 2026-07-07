@@ -22,7 +22,7 @@ func TestBuildFlashStateKeepsCurrentWindowFlashingDuringGrace(t *testing.T) {
 	activeWindows := map[string]struct{}{"@1": {}}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, nextSeenAt := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3)
+	state, nextSeenAt := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, "")
 
 	if !state.WindowsFlashing["@1"] {
 		t.Fatal("expected current window to keep flashing during grace period")
@@ -50,7 +50,7 @@ func TestBuildFlashStateMarksCurrentWindowSeenAfterGrace(t *testing.T) {
 	activeWindows := map[string]struct{}{"@1": {}}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, nextSeenAt := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 103, 3)
+	state, nextSeenAt := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 103, 3, "")
 
 	if state.WindowsFlashing["@1"] {
 		t.Fatal("expected current window flash to stop after grace period")
@@ -78,7 +78,7 @@ func TestBuildFlashStateKeepsBackgroundWindowFlashingUntilSeen(t *testing.T) {
 	activeWindows := map[string]struct{}{}
 	seenAt := map[string]int64{"@2": 0}
 
-	state, nextSeenAt := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 110, 3)
+	state, nextSeenAt := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 110, 3, "")
 
 	if !state.WindowsFlashing["@2"] {
 		t.Fatal("expected background window to keep flashing until explicitly seen")
@@ -99,7 +99,7 @@ func TestBuildFlashStateEmptyRecords(t *testing.T) {
 	activeWindows := map[string]struct{}{"@1": {}}
 	seenAt := map[string]int64{"@1": 0, "@2": 0}
 
-	state, nextSeenAt := buildFlashState(nil, paneToWindow, windows, activeWindows, seenAt, 200, 3)
+	state, nextSeenAt := buildFlashState(nil, paneToWindow, windows, activeWindows, seenAt, 200, 3, "")
 
 	if len(state.WaitingPanes) != 0 {
 		t.Fatalf("expected no waiting panes, got %d", len(state.WaitingPanes))
@@ -143,7 +143,7 @@ func TestBuildFlashStateMultipleRecordsSamePane(t *testing.T) {
 	activeWindows := map[string]struct{}{}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 106, 3)
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 106, 3, "")
 
 	if state.WaitingWindows["@1"] != 1 {
 		t.Fatalf("expected window waiting count=1 for deduplicated pane, got %d", state.WaitingWindows["@1"])
@@ -287,7 +287,7 @@ func TestBuildFlashStateWorkingPaneNotInWaiting(t *testing.T) {
 	activeWindows := map[string]struct{}{"@1": {}}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3)
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, "")
 
 	if _, ok := state.StatefulPanes["%1"]; !ok {
 		t.Fatal("expected working pane in StatefulPanes")
@@ -315,7 +315,7 @@ func TestBuildFlashStateUnknownPaneDropped(t *testing.T) {
 	activeWindows := map[string]struct{}{"@1": {}}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3)
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, "")
 
 	if len(state.StatefulPanes) != 0 {
 		t.Fatalf("expected no stateful panes for unknown pane ID, got %d", len(state.StatefulPanes))
@@ -349,7 +349,7 @@ func TestBuildFlashStateMixedStatesInWindow(t *testing.T) {
 	activeWindows := map[string]struct{}{}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3)
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, "")
 
 	if state.WaitingWindows["@1"] != 1 {
 		t.Fatalf("expected WaitingWindows count=1 (only waiting pane), got %d", state.WaitingWindows["@1"])
@@ -389,7 +389,7 @@ func TestBuildFlashStateNewerWorkingOverridesWaiting(t *testing.T) {
 	activeWindows := map[string]struct{}{}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 106, 3)
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 106, 3, "")
 
 	if _, ok := state.StatefulPanes["%1"]; !ok {
 		t.Fatal("expected pane %1 in StatefulPanes")
@@ -416,7 +416,7 @@ func TestBuildFlashStateEmptyPaneIDDropped(t *testing.T) {
 	activeWindows := map[string]struct{}{"@1": {}}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3)
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, "")
 
 	if len(state.StatefulPanes) != 0 {
 		t.Fatalf("expected no stateful panes for empty PaneID, got %d", len(state.StatefulPanes))
@@ -819,7 +819,7 @@ func TestBuildFlashStateStoppedPaneNotInWaiting(t *testing.T) {
 	activeWindows := map[string]struct{}{"@1": {}}
 	seenAt := map[string]int64{"@1": 0}
 
-	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3)
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, "")
 
 	if _, ok := state.StatefulPanes["%1"]; !ok {
 		t.Fatal("expected stopped pane in StatefulPanes")
@@ -1041,4 +1041,68 @@ func contains(slice []string, val string) bool {
 		}
 	}
 	return false
+}
+
+// TestBuildFlashStateIgnoresForeignSocket verifies that a record stamped with a
+// different tmux server's socket is ignored even when its pane ID collides with
+// a pane in this daemon's topology — the cross-server bleed this scoping fixes.
+func TestBuildFlashStateIgnoresForeignSocket(t *testing.T) {
+	// %15 exists in this daemon, but the waiting record was written by an agent
+	// inside another tmux server whose %15 is unrelated.
+	records := []record{{
+		Agent:     "claude",
+		PaneID:    "%15",
+		Reason:    "permission_prompt",
+		UpdatedAt: 100,
+		State:     "waiting",
+		Socket:    "/tmp/tmux-test/other",
+	}}
+	paneToWindow := map[string]string{"%15": "@2"}
+	windows := map[string]struct{}{"@2": {}}
+	activeWindows := map[string]struct{}{"@2": {}}
+	seenAt := map[string]int64{"@2": 0}
+
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, "/tmp/tmux-test/outer")
+
+	if len(state.StatefulPanes) != 0 {
+		t.Fatalf("expected foreign-socket record to be ignored, got stateful panes: %v", state.StatefulPanes)
+	}
+	if state.WindowsFlashing["@2"] {
+		t.Fatal("window must not flash for a record owned by a different tmux server")
+	}
+}
+
+// TestBuildFlashStateMatchesOwnSocket verifies that a record stamped with this
+// daemon's own socket is honored, and that an empty socket (legacy producer)
+// still matches any daemon for backward compatibility.
+func TestBuildFlashStateMatchesOwnSocket(t *testing.T) {
+	const sock = "/tmp/tmux-test/outer"
+	for _, tc := range []struct {
+		name   string
+		socket string
+	}{
+		{"own socket", sock},
+		{"legacy empty socket", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			records := []record{{
+				Agent:     "relay",
+				PaneID:    "%15",
+				Reason:    "external_relay",
+				UpdatedAt: 100,
+				State:     "waiting",
+				Socket:    tc.socket,
+			}}
+			paneToWindow := map[string]string{"%15": "@2"}
+			windows := map[string]struct{}{"@2": {}}
+			activeWindows := map[string]struct{}{"@2": {}}
+			seenAt := map[string]int64{"@2": 0}
+
+			state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, sock)
+
+			if state.WaitingWindows["@2"] != 1 {
+				t.Fatalf("expected window @2 to be waiting, got %d", state.WaitingWindows["@2"])
+			}
+		})
+	}
 }

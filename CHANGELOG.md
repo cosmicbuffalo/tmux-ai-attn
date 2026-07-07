@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 — 2026-07-07
+
+- Scope state records to their owning tmux server. A record carrying a `socket` field is ignored unless it matches this daemon's `--tmux-socket`. Fixes cross-server window flashing: a `pane_id` written by one tmux server was being matched against an unrelated pane with the same `%N` in another tmux server, lighting up the wrong window. Records without a `socket` (older `ai-attn`) still match any server, preserving prior behavior.
+- Stamp terminal-bell records created by the plugin's Codex fallback hook with the current tmux server socket when supported by `ai-attn`, so bell-generated records get the same cross-server scoping.
+
 ## 0.2.0 — 2026-05-15
 
 - Spinner animation for working panes — cycles through configurable frames at the tick rate, giving visual feedback that the agent is actively processing

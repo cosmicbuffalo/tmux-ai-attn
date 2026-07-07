@@ -137,7 +137,7 @@ done
 # own hook integrations that report waiting state directly.
 BELL_SCRIPT="$CURRENT_DIR/scripts/bell-to-ai-attn.sh"
 # shellcheck disable=SC2016
-BELL_HOOK_SH='[ -x "'"$BELL_SCRIPT"'" ] && "'"$BELL_SCRIPT"'" "#{pane_current_command}" "#{pane_start_command}" "#{pane_id}" "#{pane_current_path}" "#{@ai_attn_cli}"'
+BELL_HOOK_SH='[ -x "'"$BELL_SCRIPT"'" ] && "'"$BELL_SCRIPT"'" "#{pane_current_command}" "#{pane_start_command}" "#{pane_id}" "#{pane_current_path}" "#{@ai_attn_cli}" "#{socket_path}"'
 BELL_HOOK_COMMAND="run-shell -b '$BELL_HOOK_SH'"
 clear_plugin_hooks "alert-bell"
 ensure_hook_contains "alert-bell" "$BELL_HOOK_COMMAND"
