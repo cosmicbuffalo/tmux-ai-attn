@@ -858,7 +858,7 @@ func clearAllAttnOptions(socket string) {
 	for name := range globals {
 		// Preserve configuration options; only clear runtime state.
 		switch name {
-		case "@ai_attn_cli", "@ai_attn_version",
+		case "@ai_attn_cli",
 			"@ai_attn_seen_flash_seconds", "@ai_attn_refresh_client",
 			"@ai_attn_dev_build", "@ai_attn_enable_default_formats",
 			"@ai_attn_icon_waiting", "@ai_attn_icon_stopped", "@ai_attn_icon_done",
