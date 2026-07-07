@@ -65,9 +65,9 @@ If `ai-attn` is installed but not on `PATH`, note the full path — it will be n
 
 ### Step 3: Configure AI CLI Hooks
 
-Hook wiring lives in the ai-attn project, not here. Read [ai-attn's AGENTS.md](https://github.com/cosmicbuffalo/ai-attn/blob/main/AGENTS.md) and follow the per-agent instructions for whichever CLIs the user actually uses (Claude Code, Codex, OpenCode). That file knows how to edit `~/.claude/settings.json`, `~/.codex/config.toml`, and `~/.config/opencode/opencode.jsonc` correctly.
+Hook wiring lives in the ai-attn project, not here. Read [ai-attn's AGENTS.md](https://github.com/cosmicbuffalo/ai-attn/blob/main/AGENTS.md) and follow the per-agent instructions for whichever CLIs the user actually uses (Claude Code, Codex, OpenCode). That file knows how to edit `~/.claude/settings.json`, `~/.codex/hooks.json`, and `~/.config/opencode/opencode.jsonc` correctly.
 
-**Codex note:** Codex's `notify` channel only emits `agent-turn-complete`, so mid-turn permission prompts won't reach ai-attn through the normal hook path. `tmux-ai-attn` handles this automatically by registering a tmux `alert-bell` hook (codex emits a terminal bell on permission prompts) — no extra configuration is needed beyond installing the plugin in Step 4.
+**Codex note:** Current Codex lifecycle hooks can report `PermissionRequest`, `PreToolUse`, and `PostToolUse` directly once `ai-attn setup codex` has installed `~/.codex/hooks.json` and the hooks are trusted in Codex. `tmux-ai-attn` still registers a tmux `alert-bell` fallback for older or untrusted hook setups.
 
 When you're done, return here for Step 4.
 
@@ -265,7 +265,7 @@ Run through this checklist and report results to the user:
 - [ ] `tmux-ai-attn-sync` process is running (`ps aux | grep tmux-ai-attn-sync`)
 - [ ] `@ai_attn_last_error` is empty
 - [ ] `ai-attn test` triggers visual changes in tmux and auto-clears
-- [ ] AI CLI hook is registered (Claude Code settings or Codex config.toml)
+- [ ] AI CLI hook is registered (Claude Code settings or Codex hooks.json)
 
 If all checks pass, the setup is complete. Inform the user that the next time their AI agent pauses for permission or completes a turn, their tmux session will visually indicate which window/pane needs attention.
 

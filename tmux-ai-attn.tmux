@@ -124,14 +124,13 @@ for hook in client-attached client-session-changed session-created after-new-ses
   ensure_hook_contains "$hook" "$HOOK_COMMAND"
 done
 
-# alert-bell → ai-attn waiting record (codex only).
+# alert-bell -> ai-attn waiting record (codex only).
 #
-# Codex's notify channel only emits agent-turn-complete in current versions,
-# so permission prompts mid-turn never reach ai-attn through the hook path.
-# Codex emits a terminal bell on permission prompts; routing alert-bell
-# through bell-to-ai-attn.sh lets us write a `waiting` record so the status
-# line flashes. The script filters to codex panes — other agents have their
-# own hook integrations that report waiting state directly.
+# Current Codex lifecycle hooks can report PermissionRequest and tool activity
+# directly through ai-attn. Codex also emits a terminal bell on permission
+# prompts, so routing alert-bell through bell-to-ai-attn.sh keeps a fallback for
+# older or untrusted hook setups. The script filters to codex panes; other
+# agents have their own hook integrations that report waiting state directly.
 BELL_SCRIPT="$CURRENT_DIR/scripts/bell-to-ai-attn.sh"
 # shellcheck disable=SC2016
 BELL_HOOK_SH='[ -x "'"$BELL_SCRIPT"'" ] && "'"$BELL_SCRIPT"'" "#{pane_current_command}" "#{pane_start_command}" "#{pane_id}" "#{pane_current_path}" "#{@ai_attn_cli}" "#{socket_path}"'

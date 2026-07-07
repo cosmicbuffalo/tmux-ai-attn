@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # tmux-ai-attn: alert-bell → ai-attn waiting writer.
 #
-# Codex's `notify` channel only emits agent-turn-complete in current
-# versions, so permission prompts mid-turn aren't reported through the
-# usual hook path. Codex does emit an ASCII BEL on permission prompts,
-# which tmux surfaces via the alert-bell hook. This script translates
-# that bell into an ai-attn `waiting` record so the status line flashes.
+# Codex lifecycle hooks can report PermissionRequest and tool activity
+# directly through ai-attn. Codex also emits an ASCII BEL on permission
+# prompts, which tmux surfaces via alert-bell. This script keeps that
+# bell path as a fallback for older or untrusted hook setups, translating
+# it into an ai-attn `waiting` record so the status line flashes.
 #
 # Args (all positional, supplied by tmux format expansion):
 #   $1  pane_current_command  — current foreground process basename
