@@ -83,9 +83,11 @@ Add tests for any new logic in `buildFlashState` or `stateHash`. Tests use plain
 
 ## Releases
 
-Release binaries are built and published by CI. Pushing a tag matching `v*` triggers the `build-release` and `release` jobs in `.github/workflows/ci.yml`, which cross-compile `tmux-ai-attn-sync` for `linux-amd64`, `linux-arm64`, `darwin-amd64`, and `darwin-arm64`, generate `checksums.txt`, and create a draft GitHub Release with the binaries attached.
+Release binaries are built and published by CI. Merging a change to `main` that updates `VERSION` creates the matching tag automatically after tests pass, then cross-compiles `tmux-ai-attn-sync` for `linux-amd64`, `linux-arm64`, `darwin-amd64`, and `darwin-arm64`, generates `checksums.txt`, and creates a draft GitHub Release with the binaries attached.
 
-The bundled default helper version lives in the repo's `VERSION` file — bump it before tagging so `scripts/ensure-binary.sh` downloads the matching release.
+Pushing a tag matching `v*` directly still triggers the same build and draft-release flow.
+
+The bundled default helper version lives in the repo's `VERSION` file — bump it when preparing a `tmux-ai-attn` release so `scripts/ensure-binary.sh` downloads the matching `tmux-ai-attn` release. This is separate from the `ai-attn` CLI version configured by `@ai_attn_cli`.
 
 ## Submitting a PR
 
