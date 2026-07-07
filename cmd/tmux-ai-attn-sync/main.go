@@ -28,6 +28,7 @@ type record struct {
 	State     string `json:"state"`
 	Reason    string `json:"reason"`
 	UpdatedAt int64  `json:"updated_at"`
+	Socket    string `json:"socket"`
 }
 
 type flashState struct {
@@ -442,7 +443,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		activeWindows[windowID] = struct{}{}
 	}
 
-	state, nextSeenAtByWindow := buildFlashState(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds)
+	state, nextSeenAtByWindow := buildFlashState(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket)
 
 	// Persist window flash for the full grace period once started,
 	// but only while the window still has waiting panes.
@@ -623,13 +624,16 @@ func tickForState(state flashState, tickMs int, flashMultiplier int) time.Durati
 
 // buildFlashState computes the current attention/flash state for all panes and windows
 // from the given records, topology, and timing information. Called from syncOnce.
-func buildFlashState(records []record, paneToWindow map[string]string, windows map[string]struct{}, activeWindows map[string]struct{}, seenAtByWindow map[string]int64, nowUnix int64, flashGraceSeconds int64) (flashState, map[string]int64) {
+func buildFlashState(records []record, paneToWindow map[string]string, windows map[string]struct{}, activeWindows map[string]struct{}, seenAtByWindow map[string]int64, nowUnix int64, flashGraceSeconds int64, daemonSocket string) (flashState, map[string]int64) {
 	// For each target pane, keep the most recent record with a non-empty
 	// state.  This ensures a newer state from any source overrides an
 	// older one.
 	latestByPane := map[string]record{}
 	for _, rec := range records {
 		if rec.State == "" {
+			continue
+		}
+		if rec.Socket != "" && daemonSocket != "" && rec.Socket != daemonSocket {
 			continue
 		}
 		targetPaneID := rec.PaneID
@@ -854,7 +858,7 @@ func clearAllAttnOptions(socket string) {
 	for name := range globals {
 		// Preserve configuration options; only clear runtime state.
 		switch name {
-		case "@ai_attn_cli", "@ai_attn_version",
+		case "@ai_attn_cli",
 			"@ai_attn_seen_flash_seconds", "@ai_attn_refresh_client",
 			"@ai_attn_dev_build", "@ai_attn_enable_default_formats",
 			"@ai_attn_icon_waiting", "@ai_attn_icon_stopped", "@ai_attn_icon_done",

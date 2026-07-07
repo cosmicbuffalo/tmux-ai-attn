@@ -2,8 +2,6 @@
 set -euo pipefail
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION_FILE="$CURRENT_DIR/VERSION"
-DEFAULT_VERSION="$(cat "$VERSION_FILE" 2>/dev/null || true)"
 
 # Read all current @ai_attn_ options in one call.
 existing="$(tmux show-options -gq 2>/dev/null || true)"
@@ -24,7 +22,6 @@ set_default_option() {
 
 DEFAULT_BATCH=()
 set_default_option @ai_attn_cli "ai-attn"
-set_default_option @ai_attn_version "$DEFAULT_VERSION"
 set_default_option @ai_attn_dev_build "off"
 set_default_option @ai_attn_seen_flash_seconds "3"
 set_default_option @ai_attn_enable_default_formats "off"
@@ -137,7 +134,7 @@ done
 # own hook integrations that report waiting state directly.
 BELL_SCRIPT="$CURRENT_DIR/scripts/bell-to-ai-attn.sh"
 # shellcheck disable=SC2016
-BELL_HOOK_SH='[ -x "'"$BELL_SCRIPT"'" ] && "'"$BELL_SCRIPT"'" "#{pane_current_command}" "#{pane_start_command}" "#{pane_id}" "#{pane_current_path}" "#{@ai_attn_cli}"'
+BELL_HOOK_SH='[ -x "'"$BELL_SCRIPT"'" ] && "'"$BELL_SCRIPT"'" "#{pane_current_command}" "#{pane_start_command}" "#{pane_id}" "#{pane_current_path}" "#{@ai_attn_cli}" "#{socket_path}"'
 BELL_HOOK_COMMAND="run-shell -b '$BELL_HOOK_SH'"
 clear_plugin_hooks "alert-bell"
 ensure_hook_contains "alert-bell" "$BELL_HOOK_COMMAND"

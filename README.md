@@ -323,13 +323,13 @@ AI CLI hook  -->  ai-attn state dir  -->  ai-attn list --json
                                   your format strings render it
 ```
 
-The plugin uses the `pane_id` field from `ai-attn` records to determine which tmux pane to style.
+The plugin uses the `pane_id` field from `ai-attn` records to determine which tmux pane to style. When a record also has `socket`, the plugin only applies it to the daemon watching that tmux server; records without `socket` are treated as legacy match-any records.
 
 ### Codex permission prompts (terminal bell)
 
 Codex's `notify` channel only emits `agent-turn-complete` in current versions, so mid-turn permission prompts never reach `ai-attn` through the normal hook path. Codex does emit an ASCII BEL on permission prompts, which tmux surfaces via the `alert-bell` hook.
 
-The plugin registers an `alert-bell` hook that filters to codex panes and writes a `waiting` ai-attn record when one rings. No configuration is required — other agents are unaffected because they have their own hook integrations that report waiting state directly. Bell events are logged to `${XDG_STATE_HOME:-~/.local/state}/tmux-ai-attn/bell-hook.log`.
+The plugin registers an `alert-bell` hook that filters to codex panes and writes a socket-scoped `waiting` ai-attn record when one rings. No configuration is required — other agents are unaffected because they have their own hook integrations that report waiting state directly. Bell events are logged to `${XDG_STATE_HOME:-~/.local/state}/tmux-ai-attn/bell-hook.log`.
 
 ## Debugging
 

@@ -15,6 +15,7 @@
 #   $3  pane_id               — used as the pane_id in the ai-attn record
 #   $4  pane_current_path     — recorded as cwd
 #   $5  ai-attn CLI path      — typically @ai_attn_cli (defaults to "ai-attn")
+#   $6  socket_path           — tmux server socket that owns pane_id
 set -euo pipefail
 
 pane_command="${1:-}"
@@ -22,6 +23,7 @@ pane_start="${2:-}"
 pane_id="${3:-}"
 pane_path="${4:-}"
 ai_attn_cli="${5:-ai-attn}"
+socket_path="${6:-}"
 
 # Diagnostic log so we can confirm the hook is firing and see what tmux
 # passes through. One line per bell. Truncated at ~5 MB to bound growth.
@@ -53,12 +55,20 @@ for s in "$pane_command" "$pane_start"; do
 done
 
 if [ "$is_codex" -eq 1 ]; then
-  "$ai_attn_cli" set-state \
-    --agent codex \
-    --state waiting \
-    --pane-id "$pane_id" \
-    --session-id "bell-$pane_id" \
-    --cwd "${pane_path:-.}" \
-    --reason terminal-bell \
-    >/dev/null 2>&1 || true
+  args=(
+    set-state
+    --agent codex
+    --state waiting
+    --pane-id "$pane_id"
+    --session-id "bell-$pane_id"
+    --cwd "${pane_path:-.}"
+    --reason terminal-bell
+  )
+  if [ -n "$socket_path" ]; then
+    "$ai_attn_cli" "${args[@]}" --socket "$socket_path" >/dev/null 2>&1 \
+      || "$ai_attn_cli" "${args[@]}" >/dev/null 2>&1 \
+      || true
+  else
+    "$ai_attn_cli" "${args[@]}" >/dev/null 2>&1 || true
+  fi
 fi
