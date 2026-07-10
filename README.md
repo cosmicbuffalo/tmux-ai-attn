@@ -13,7 +13,7 @@ It separates persistent waiting state from transient flash state, so you can bui
 
 ## Requirements
 
-- tmux 3.5 or later (earlier 3.x versions are unsupported; the reload-safe hook and option handling depends on tmux 3.5's `show-options`/`show-hooks` output)
+- tmux 3.3a or later
 - [`ai-attn`](https://github.com/cosmicbuffalo/ai-attn) v0.3.2 or newer installed and on `PATH` (or configured via `@ai_attn_cli`)
 - `curl` or `wget` (for downloading the prebuilt helper binary)
 

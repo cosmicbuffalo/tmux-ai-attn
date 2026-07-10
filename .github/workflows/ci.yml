@@ -34,6 +34,9 @@ jobs:
       - name: Test daemon launcher
         run: bash scripts/test-start-loop.sh
 
+      - name: Test tmux hook compatibility
+        run: bash scripts/test-tmux-hook-compat.sh
+
       - name: Install shellcheck
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y shellcheck
