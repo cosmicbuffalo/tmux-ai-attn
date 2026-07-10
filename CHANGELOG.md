@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-07-10
 
-- Update the missing-`ai-attn` install hint to the released `ai-attn` `v0.3.1` installer.
+- Replace the Linux-only `flock` launcher lock with a portable lock that works on stock macOS.
+- Hash tmux socket paths for runtime filenames, safely migrate the legacy key, and verify PID ownership before restart signals.
+- Keep an idle daemon health timer so it exits and removes its PID file after the owning tmux server disappears.
+- Require `ai-attn` v0.3.2 or newer so pane records always use socket-scoped session keys.
+- Update the missing-`ai-attn` install hint to the `ai-attn` `v0.3.2` installer.
 - Document Codex `PreToolUse` and `PostToolUse` lifecycle hooks now reported by `ai-attn v0.3.1`; no daemon change is required because `tmux-ai-attn` already handles `working` records generically.
 
 ## 0.3.0 — 2026-07-07
