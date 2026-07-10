@@ -16,7 +16,7 @@ Follow these steps in order. At several points you will need to **ask the user**
 
 Check each of the following and report the results to the user:
 
-1. **tmux version**: Run `tmux -V`. Version must be 3.5 or later.
+1. **tmux version**: Run `tmux -V`. Version must be 3.3a or later.
 2. **tmux is running**: The user must be inside an active tmux session. Verify with `echo $TMUX` (should be non-empty).
 3. **Platform**: Run `uname -s` and `uname -m`. Supported: Linux or macOS, on amd64 (x86_64) or arm64 (aarch64/arm64).
 4. **curl or wget**: At least one must be available. Check with `command -v curl` and `command -v wget`.
