@@ -27,6 +27,9 @@ go test ./...
 step "bell hook tests"
 bash scripts/test-bell-to-ai-attn.sh
 
+step "daemon launcher tests"
+bash scripts/test-start-loop.sh
+
 step "shellcheck"
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck scripts/*.sh tmux-ai-attn.tmux

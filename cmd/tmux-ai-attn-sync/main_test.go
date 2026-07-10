@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -265,6 +268,42 @@ func TestTickForStateIdleReturnsZero(t *testing.T) {
 	got := tickForState(state, 120, 4)
 	if got != 0 {
 		t.Fatalf("expected 0 tick for idle state, got %v", got)
+	}
+}
+
+func TestLoopTickIntervalKeepsIdleServerHealthCheck(t *testing.T) {
+	if got := loopTickInterval(0); got != idleServerCheckInterval {
+		t.Fatalf("loopTickInterval(0) = %v, want %v", got, idleServerCheckInterval)
+	}
+	want := 120 * time.Millisecond
+	if got := loopTickInterval(want); got != want {
+		t.Fatalf("loopTickInterval(%v) = %v, want unchanged", want, got)
+	}
+}
+
+func TestTmuxServerIsGoneRecognizesStaleSocketErrors(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "tmux.sock")
+	if err := os.WriteFile(socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{
+		"no server running on " + socket,
+		"failed to connect to server: Connection refused",
+		"server exited unexpectedly",
+	} {
+		if !tmuxServerIsGone(socket, errors.New(message)) {
+			t.Fatalf("expected server-gone classification for %q", message)
+		}
+	}
+	if tmuxServerIsGone(socket, errors.New("temporary tmux error")) {
+		t.Fatal("generic error with an existing socket should remain retryable")
+	}
+}
+
+func TestTmuxServerIsGoneRecognizesMissingSocket(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "missing.sock")
+	if !tmuxServerIsGone(socket, errors.New("generic tmux error")) {
+		t.Fatal("missing socket should mean the server is gone")
 	}
 }
 

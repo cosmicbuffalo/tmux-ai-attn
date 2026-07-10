@@ -128,9 +128,19 @@ func renderWindowSegment(windowState string, flashing bool, flashPhase string, s
 	return b.String()
 }
 
-const debounceDuration = 50 * time.Millisecond
+const (
+	debounceDuration        = 50 * time.Millisecond
+	idleServerCheckInterval = 30 * time.Second
+)
 
 var defaultSpinnerFrames = []string{"·", "·", "✢", "✳", "✶", "✽", "✻", "✻", "✻", "✽", "✶", "✳", "✢", "·"}
+
+func loopTickInterval(displayTick time.Duration) time.Duration {
+	if displayTick <= 0 {
+		return idleServerCheckInterval
+	}
+	return displayTick
+}
 
 func parseSpinnerFrames(globals map[string]string) []string {
 	v := globals["@ai_attn_spinner_frames"]
@@ -247,6 +257,10 @@ func run() int {
 				}
 			}
 		}
+		// Even an idle daemon must periodically notice that its tmux server
+		// exited. Without this floor there may be no fsnotify event or display
+		// tick to wake the loop, leaving the process and PID file behind.
+		d = loopTickInterval(d)
 		if d > 0 {
 			if tickTimer != nil {
 				tickTimer.Reset(d)
@@ -254,9 +268,6 @@ func run() int {
 				tickTimer = time.NewTimer(d)
 			}
 			tickCh = tickTimer.C
-		} else {
-			tickTimer = nil
-			tickCh = nil
 		}
 	}
 	resetTick(tick)
@@ -328,6 +339,25 @@ func aiAttnStateDir() string {
 	return filepath.Join(home, ".local", "state", "ai-attn")
 }
 
+func tmuxServerIsGone(socket string, err error) bool {
+	if _, statErr := os.Stat(socket); os.IsNotExist(statErr) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"no server running",
+		"failed to connect to server",
+		"connection refused",
+		"no such file or directory",
+		"server exited unexpectedly",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // syncOnce performs a single sync cycle. It returns whether the tmux server is
 // gone and the recommended tick interval for the next display refresh (0 means
 // no tick is needed because no state is being displayed).
@@ -335,8 +365,8 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	globals, err := tmuxGetGlobalOptions(s.socket, "@ai_attn_")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tmux error: %v\n", err)
-		if _, statErr := os.Stat(s.socket); statErr != nil {
-			return true, 0 // socket gone, exit
+		if tmuxServerIsGone(s.socket, err) {
+			return true, 0
 		}
 		return false, time.Second // retry
 	}

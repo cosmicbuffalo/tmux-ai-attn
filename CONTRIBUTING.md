@@ -62,7 +62,7 @@ The sync daemon is a single `main` package with no external dependencies. Key fu
 
 - `run()` — Main loop: fsnotify watcher setup, adaptive tick timer, signal handling
 - `syncOnce()` — Single sync cycle: query ai-attn, read tmux topology, compute state, batch-write options
-- `tickForState()` — Determines display tick interval based on active states (1s for flash animation, 10s for active pane age text, 0 for idle)
+- `tickForState()` — Determines display tick interval based on active states (fast for flash/spinner animation, 10s for active pane age text, 0 for idle); the event loop applies a 30s idle server-health check
 - `buildFlashState()` — Core algorithm: maps ai-attn records to waiting/flash state per window and pane
 
 When adding features, prefer keeping the subprocess count low. Batch tmux reads/writes where possible.
