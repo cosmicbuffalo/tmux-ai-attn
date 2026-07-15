@@ -169,7 +169,8 @@ set -g @ai_attn_color_done "green"
 set -g @ai_attn_color_flash_bg "colour226"
 set -g @ai_attn_color_flash_fg "colour16"
 
-# Text foreground color after the indicator (should match your theme).
+# Text foreground color after the indicator. Use "default" to restore the
+# enclosing window-status style instead of choosing a fixed color.
 set -g @ai_attn_color_text_fg "colour255"
 ```
 
@@ -224,7 +225,7 @@ The plugin writes these tmux user options on each sync cycle. Use them in your f
 | `@ai_attn_window_waiting_count` | integer | Number of waiting panes in this window. |
 | `@ai_attn_window_flash` | `0` / `1` | Transient flag. Set to `1` when a new attention signal arrives and the window has not yet been acknowledged. Stays `1` for background windows until the user switches to them. For the active window, stays `1` for `@ai_attn_seen_flash_seconds` then auto-clears. |
 | `@ai_attn_window_state` | string | Aggregate state of the window: the highest-priority state among all panes (`waiting` > `working` > `stopped` > `done`). Empty when idle. |
-| `@ai_attn_window_segment` | string | Pre-rendered tmux format string containing the indicator (flash bg, state icon with color, text fg reset). Use with `#{E:@ai_attn_window_segment}` in your format strings — the `E:` prefix expands the embedded style sequences. Colors and icons are controlled by the `@ai_attn_color_*` and `@ai_attn_icon_*` options. |
+| `@ai_attn_window_segment` | string | Pre-rendered tmux format string containing the indicator (flash bg, state icon with color, text style reset). Use with `#{E:@ai_attn_window_segment}` in your format strings — the `E:` prefix expands the embedded style sequences. Set `@ai_attn_color_text_fg` to `default` to restore the enclosing window-status style; colors and icons are controlled by the `@ai_attn_color_*` and `@ai_attn_icon_*` options. |
 
 ### Per-pane options
 

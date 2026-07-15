@@ -1072,6 +1072,15 @@ func TestRenderWindowSegmentTextFgReset(t *testing.T) {
 	}
 }
 
+func TestRenderWindowSegmentInheritedTextStyle(t *testing.T) {
+	cfg := defaultSegmentConfig()
+	cfg.colorTextFg = "default"
+	got := renderWindowSegment("done", false, "0", "", cfg)
+	if !strings.HasSuffix(got, "#[default]") {
+		t.Fatalf("expected inherited text style reset at end, got %q", got)
+	}
+}
+
 // contains is a test helper that checks whether a string slice contains a value.
 func contains(slice []string, val string) bool {
 	for _, s := range slice {

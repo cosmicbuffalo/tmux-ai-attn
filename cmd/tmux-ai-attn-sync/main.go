@@ -119,6 +119,8 @@ func renderWindowSegment(windowState string, flashing bool, flashPhase string, s
 		b.WriteString("#[fg=")
 		b.WriteString(cfg.colorFlashFg)
 		b.WriteString("]")
+	} else if cfg.colorTextFg == "default" {
+		b.WriteString("#[default]")
 	} else {
 		b.WriteString("#[fg=")
 		b.WriteString(cfg.colorTextFg)
