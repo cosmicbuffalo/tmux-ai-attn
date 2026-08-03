@@ -29,6 +29,12 @@ type record struct {
 	Reason    string `json:"reason"`
 	UpdatedAt int64  `json:"updated_at"`
 	Socket    string `json:"socket"`
+	CWD       string `json:"cwd"`
+}
+
+type paneIdentity struct {
+	Command string
+	CWD     string
 }
 
 type flashState struct {
@@ -426,13 +432,14 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		}
 	}
 
-	paneLines, err := tmux(s.socket, "list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{@ai_attn_window_seen_at}")
+	paneLines, err := tmux(s.socket, "list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{@ai_attn_window_seen_at}\t#{pane_current_command}\t#{pane_current_path}")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return false, 0
 	}
 
 	paneToWindow := map[string]string{}
+	paneIdentities := map[string]paneIdentity{}
 	panes := map[string]struct{}{}
 	windows := map[string]struct{}{}
 	seenAtByWindow := map[string]int64{}
@@ -441,13 +448,16 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 3)
+		parts := strings.SplitN(line, "\t", 5)
 		if len(parts) < 2 {
 			continue
 		}
 		paneID := parts[0]
 		windowID := parts[1]
 		paneToWindow[paneID] = windowID
+		if len(parts) == 5 {
+			paneIdentities[paneID] = paneIdentity{Command: parts[3], CWD: parts[4]}
+		}
 		panes[paneID] = struct{}{}
 		if _, seen := windows[windowID]; !seen {
 			windows[windowID] = struct{}{}
@@ -475,7 +485,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		activeWindows[windowID] = struct{}{}
 	}
 
-	state, nextSeenAtByWindow := buildFlashState(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket)
+	state, nextSeenAtByWindow := buildFlashStateWithPaneIdentities(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket, paneIdentities)
 
 	// Persist window flash for the full grace period once started,
 	// but only while the window still has waiting panes.
@@ -676,6 +686,13 @@ func tickForState(state flashState, tickMs int, flashMultiplier int) time.Durati
 // buildFlashState computes the current attention/flash state for all panes and windows
 // from the given records, topology, and timing information. Called from syncOnce.
 func buildFlashState(records []record, paneToWindow map[string]string, windows map[string]struct{}, activeWindows map[string]struct{}, seenAtByWindow map[string]int64, nowUnix int64, flashGraceSeconds int64, daemonSocket string) (flashState, map[string]int64) {
+	return buildFlashStateWithPaneIdentities(records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, daemonSocket, nil)
+}
+
+// buildFlashStateWithPaneIdentities also resolves records produced by detached
+// agent runtimes. Those hooks have no tmux environment, so accept an exact
+// agent/CWD match only when it identifies one pane on this server.
+func buildFlashStateWithPaneIdentities(records []record, paneToWindow map[string]string, windows map[string]struct{}, activeWindows map[string]struct{}, seenAtByWindow map[string]int64, nowUnix int64, flashGraceSeconds int64, daemonSocket string, paneIdentities map[string]paneIdentity) (flashState, map[string]int64) {
 	// For each target pane, keep the most recent record with a non-empty
 	// state.  This ensures a newer state from any source overrides an
 	// older one.
@@ -689,7 +706,11 @@ func buildFlashState(records []record, paneToWindow map[string]string, windows m
 		}
 		targetPaneID := rec.PaneID
 		if targetPaneID == "" {
-			continue
+			targetPaneID = uniquePaneForUnscopedRecord(rec, paneIdentities)
+			if targetPaneID == "" {
+				continue
+			}
+			rec.PaneID = targetPaneID
 		}
 		if _, ok := paneToWindow[targetPaneID]; !ok {
 			continue
@@ -751,6 +772,43 @@ func buildFlashState(records []record, paneToWindow map[string]string, windows m
 		WindowsFlashing: windowFlash,
 		PanesFlashing:   paneFlash,
 	}, nextSeenAtByWindow
+}
+
+func uniquePaneForUnscopedRecord(rec record, panes map[string]paneIdentity) string {
+	if rec.PaneID != "" || rec.Socket != "" || rec.Agent == "" || rec.Agent == "pmux" || rec.CWD == "" {
+		return ""
+	}
+
+	match := ""
+	for paneID, pane := range panes {
+		if pane.CWD != rec.CWD || !paneCommandMatchesAgent(pane.Command, rec.Agent) {
+			continue
+		}
+		if match != "" {
+			return ""
+		}
+		match = paneID
+	}
+	return match
+}
+
+func paneCommandMatchesAgent(command, agent string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	if separator := strings.IndexAny(command, " \t"); separator >= 0 {
+		command = command[:separator]
+	}
+	command = filepath.Base(command)
+	if len(command) < len(agent) || !strings.EqualFold(command[:len(agent)], agent) {
+		return false
+	}
+	return len(command) == len(agent) || !isASCIIAlphanumeric(command[len(agent)])
+}
+
+func isASCIIAlphanumeric(ch byte) bool {
+	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9'
 }
 
 // queryAttn invokes the ai-attn CLI to fetch the current attention records as JSON.

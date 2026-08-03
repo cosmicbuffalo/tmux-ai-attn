@@ -465,6 +465,79 @@ func TestBuildFlashStateEmptyPaneIDDropped(t *testing.T) {
 	}
 }
 
+func TestBuildFlashStateResolvesUniqueUnscopedAgentCWD(t *testing.T) {
+	records := []record{{
+		Agent:     "claude",
+		CWD:       "/work/tweaker",
+		Reason:    "PostToolUse",
+		UpdatedAt: 100,
+		State:     "working",
+	}}
+	paneToWindow := map[string]string{"%1": "@1", "%2": "@2"}
+	windows := map[string]struct{}{"@1": {}, "@2": {}}
+	panes := map[string]paneIdentity{
+		"%1": {Command: "claude", CWD: "/work/tweaker"},
+		"%2": {Command: "codex", CWD: "/work/tweaker"},
+	}
+
+	state, _ := buildFlashStateWithPaneIdentities(
+		records, paneToWindow, windows, nil, nil, 102, 3, "/tmp/tmux/pmux", panes,
+	)
+
+	if got := state.StatefulPanes["%1"].State; got != "working" {
+		t.Fatalf("expected unique Claude pane to resolve as working, got %q", got)
+	}
+	if _, ok := state.StatefulPanes["%2"]; ok {
+		t.Fatal("expected Codex pane not to match Claude record")
+	}
+}
+
+func TestBuildFlashStateRejectsAmbiguousUnscopedAgentCWD(t *testing.T) {
+	records := []record{{
+		Agent:     "claude",
+		CWD:       "/work/shared",
+		UpdatedAt: 100,
+		State:     "working",
+	}}
+	paneToWindow := map[string]string{"%1": "@1", "%2": "@2"}
+	windows := map[string]struct{}{"@1": {}, "@2": {}}
+	panes := map[string]paneIdentity{
+		"%1": {Command: "claude", CWD: "/work/shared"},
+		"%2": {Command: "claude-2", CWD: "/work/shared"},
+	}
+
+	state, _ := buildFlashStateWithPaneIdentities(
+		records, paneToWindow, windows, nil, nil, 102, 3, "/tmp/tmux/pmux", panes,
+	)
+
+	if len(state.StatefulPanes) != 0 {
+		t.Fatalf("expected ambiguous unscoped record to be dropped, got %v", state.StatefulPanes)
+	}
+}
+
+func TestBuildFlashStateDoesNotRemapScopedRecordWithoutPane(t *testing.T) {
+	records := []record{{
+		Agent:     "claude",
+		Socket:    "/tmp/tmux/pmux",
+		CWD:       "/work/tweaker",
+		UpdatedAt: 100,
+		State:     "working",
+	}}
+	paneToWindow := map[string]string{"%1": "@1"}
+	windows := map[string]struct{}{"@1": {}}
+	panes := map[string]paneIdentity{
+		"%1": {Command: "claude", CWD: "/work/tweaker"},
+	}
+
+	state, _ := buildFlashStateWithPaneIdentities(
+		records, paneToWindow, windows, nil, nil, 102, 3, "/tmp/tmux/pmux", panes,
+	)
+
+	if len(state.StatefulPanes) != 0 {
+		t.Fatalf("expected malformed scoped record to remain unmatched, got %v", state.StatefulPanes)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Pure function tests
 // ---------------------------------------------------------------------------

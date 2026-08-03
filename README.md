@@ -330,6 +330,8 @@ AI CLI hook  -->  ai-attn state dir  -->  ai-attn list --json
 
 The plugin uses the `pane_id` field from `ai-attn` records to determine which tmux pane to style. When a record also has `socket`, the plugin only applies it to the daemon watching that tmux server; records without `socket` are treated as legacy match-any records.
 
+Detached agent runtimes, including Claude background agents, can execute hooks without a tmux environment and therefore emit records with neither field. For those records only, the daemon falls back to exact `agent` + `cwd` matching against the server's panes. It accepts the fallback only when exactly one pane matches; ambiguous records remain unassigned.
+
 ### Codex permission prompts
 
 Current Codex lifecycle hooks can report `PermissionRequest`, `PreToolUse`, and `PostToolUse` events directly through `ai-attn` when `ai-attn setup codex` has installed `~/.codex/hooks.json` and the hooks are trusted in Codex.

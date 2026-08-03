@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Route unscoped records from detached agent runtimes, including Claude background agents, by exact agent and working directory when that pair identifies exactly one pane.
+
 ## 0.3.2 — 2026-08-03
 
 - Reduce working-spinner ticks to updates for working-window segments and the shared frame instead of rewriting stable pane, window, and global state.
