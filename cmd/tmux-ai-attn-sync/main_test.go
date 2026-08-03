@@ -601,6 +601,68 @@ func TestAppendPaneStateCleared(t *testing.T) {
 	}
 }
 
+// TestAppendWorkingSpinnerUpdatesOnlyTouchesAnimatedFields verifies the hot
+// working-state tick does not rewrite stable pane/window attention options.
+func TestAppendWorkingSpinnerUpdatesOnlyTouchesAnimatedFields(t *testing.T) {
+	batch := appendWorkingSpinnerUpdates(
+		nil,
+		map[string]string{"@2": "working", "@1": "working", "@3": "waiting"},
+		map[string]bool{"@1": false, "@2": false, "@3": true},
+		"0",
+		"✻",
+		defaultSegmentConfig(),
+	)
+
+	windowUpdates := 0
+	globalUpdates := 0
+	for _, arg := range batch {
+		switch arg {
+		case "set-window-option":
+			windowUpdates++
+		case "set-option":
+			globalUpdates++
+		}
+	}
+	if windowUpdates != 2 {
+		t.Fatalf("expected 2 working-window updates, got %d: %v", windowUpdates, batch)
+	}
+	if globalUpdates != 1 {
+		t.Fatalf("expected 1 spinner-frame update, got %d: %v", globalUpdates, batch)
+	}
+	for _, stableOption := range []string{
+		"@ai_attn_window_state",
+		"@ai_attn_window_waiting",
+		"@ai_attn_pane_state",
+		"@ai_attn_state_hash",
+	} {
+		if contains(batch, stableOption) {
+			t.Fatalf("spinner-only batch unexpectedly rewrites %s: %v", stableOption, batch)
+		}
+	}
+	if !contains(batch, "@ai_attn_spinner_frame") || !contains(batch, "✻") {
+		t.Fatalf("spinner-only batch is missing the current frame: %v", batch)
+	}
+	joined := strings.Join(batch, "\x00")
+	if strings.Index(joined, "@1") > strings.Index(joined, "@2") {
+		t.Fatalf("working windows should be emitted in stable order: %v", batch)
+	}
+}
+
+func TestConfigOptionClassificationPreservesPluginOverrides(t *testing.T) {
+	for _, name := range []string{
+		"@ai_attn_plugin_dir",
+		"@ai_attn_dev_build",
+		"@ai_attn_refresh_client",
+	} {
+		if !isConfigOption(name) {
+			t.Fatalf("expected %s to survive daemon restart", name)
+		}
+	}
+	if isConfigOption("@ai_attn_spinner_frame") {
+		t.Fatal("runtime spinner frame should be cleared on daemon restart")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // stateHash edge cases
 // ---------------------------------------------------------------------------

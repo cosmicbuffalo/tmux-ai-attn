@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Reduce working-spinner ticks to updates for working-window segments and the shared frame instead of rewriting stable pane, window, and global state.
+- Preserve `@ai_attn_plugin_dir` across daemon restarts so pmux and developer-managed plugin overrides remain active.
+
 ## 0.3.1 — 2026-07-10
 
 - Replace the Linux-only `flock` launcher lock with a portable lock that works on stock macOS.

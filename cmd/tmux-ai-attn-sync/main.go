@@ -540,7 +540,26 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 
 	clearingStaleError := refreshQuery && queryErr == nil && globals["@ai_attn_last_error"] != ""
 	visualChanged := nextStateHash != currentStateHash || nextFlashPhase != currentFlashPhase
-	if !visualChanged && !clearingStaleError && !hasWorkingPane {
+	spinnerChanged := spinnerFrame != globals["@ai_attn_spinner_frame"]
+	if !visualChanged && !clearingStaleError && !spinnerChanged {
+		return false, tickForState(state, tickMs, flashMultiplier)
+	}
+
+	// A working spinner normally changes every tick. Keep that hot path small:
+	// pane state, waiting counts, and non-working windows are unchanged, so only
+	// publish the working window segments and the shared frame.
+	if hasWorkingPane && spinnerChanged && !visualChanged && !clearingStaleError {
+		batch := appendWorkingSpinnerUpdates(
+			nil, windowStates, state.WindowsFlashing, nextFlashPhase, spinnerFrame, segCfg,
+		)
+		if err := tmuxBatch(s.socket, batch); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		if isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
+			if err := tmuxRefreshClientBestEffort(s.socket); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}
 		return false, tickForState(state, tickMs, flashMultiplier)
 	}
 
@@ -829,6 +848,23 @@ func appendPaneState(batch []string, paneID string, state, agent, reason string,
 	return batch
 }
 
+// appendWorkingSpinnerUpdates builds the minimal batch needed for a spinner
+// frame change. Sorting keeps command order deterministic for tests and logs.
+func appendWorkingSpinnerUpdates(batch []string, windowStates map[string]string, windowsFlashing map[string]bool, flashPhase, spinnerFrame string, cfg segmentConfig) []string {
+	windowIDs := make([]string, 0, len(windowStates))
+	for windowID, state := range windowStates {
+		if state == "working" {
+			windowIDs = append(windowIDs, windowID)
+		}
+	}
+	sort.Strings(windowIDs)
+	for _, windowID := range windowIDs {
+		segment := renderWindowSegment("working", windowsFlashing[windowID], flashPhase, spinnerFrame, cfg)
+		batch = appendWindowOption(batch, windowID, "@ai_attn_window_segment", segment)
+	}
+	return appendGlobalOption(batch, "@ai_attn_spinner_frame", spinnerFrame)
+}
+
 // tmuxSetGlobal sets a single global tmux option. Called from syncOnce to record errors.
 func tmuxSetGlobal(socket, name, value string) error {
 	_, err := tmux(socket, "set-option", "-gq", name, value)
@@ -888,16 +924,7 @@ func clearAllAttnOptions(socket string) {
 	}
 	var batch []string
 	for name := range globals {
-		// Preserve configuration options; only clear runtime state.
-		switch name {
-		case "@ai_attn_cli",
-			"@ai_attn_seen_flash_seconds", "@ai_attn_refresh_client",
-			"@ai_attn_dev_build", "@ai_attn_enable_default_formats",
-			"@ai_attn_icon_waiting", "@ai_attn_icon_stopped", "@ai_attn_icon_done",
-			"@ai_attn_color_waiting", "@ai_attn_color_stopped", "@ai_attn_color_working",
-			"@ai_attn_color_done", "@ai_attn_color_flash_bg", "@ai_attn_color_flash_fg",
-			"@ai_attn_color_text_fg", "@ai_attn_spinner_frames",
-			"@ai_attn_tick_ms", "@ai_attn_flash_multiplier":
+		if isConfigOption(name) {
 			continue
 		}
 		batch = appendGlobalOption(batch, name, "")
@@ -932,6 +959,22 @@ func clearAllAttnOptions(socket string) {
 
 	if len(batch) > 0 {
 		_ = tmuxBatch(socket, batch)
+	}
+}
+
+func isConfigOption(name string) bool {
+	switch name {
+	case "@ai_attn_cli", "@ai_attn_plugin_dir",
+		"@ai_attn_seen_flash_seconds", "@ai_attn_refresh_client",
+		"@ai_attn_dev_build", "@ai_attn_enable_default_formats",
+		"@ai_attn_icon_waiting", "@ai_attn_icon_stopped", "@ai_attn_icon_done",
+		"@ai_attn_color_waiting", "@ai_attn_color_stopped", "@ai_attn_color_working",
+		"@ai_attn_color_done", "@ai_attn_color_flash_bg", "@ai_attn_color_flash_fg",
+		"@ai_attn_color_text_fg", "@ai_attn_spinner_frames",
+		"@ai_attn_tick_ms", "@ai_attn_flash_multiplier":
+		return true
+	default:
+		return false
 	}
 }
 

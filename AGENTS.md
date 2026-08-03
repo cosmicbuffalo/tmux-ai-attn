@@ -281,7 +281,7 @@ These tmux options can be set in `tmux.conf` with `set -g`:
 |--------|---------|-------------|
 | `@ai_attn_cli` | `"ai-attn"` | Path or name of the ai-attn CLI |
 | `@ai_attn_seen_flash_seconds` | `"3"` | Flash duration for active window before auto-acknowledge |
-| `@ai_attn_refresh_client` | `"on"` | Force tmux redraw after state changes |
+| `@ai_attn_refresh_client` | `"on"` | Force tmux redraw after state changes and spinner-only ticks; disable when the surrounding status line supplies its own animation clock |
 
 The helper binary version is pinned by the `VERSION` file in the repo and tracked by TPM updates. There's no tmux option to override it.
 
