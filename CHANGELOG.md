@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 — 2026-08-04
 
 - Route unscoped records from detached agent runtimes, including Claude background agents, by exact agent and working directory when that pair identifies exactly one pane.
 
