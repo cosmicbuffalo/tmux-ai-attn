@@ -334,9 +334,9 @@ Detached agent runtimes, including Claude background agents, can execute hooks w
 
 ### Codex permission prompts
 
-Current Codex lifecycle hooks can report `PermissionRequest`, `PreToolUse`, and `PostToolUse` events directly through `ai-attn` when `ai-attn setup codex` has installed `~/.codex/hooks.json` and the hooks are trusted in Codex.
+Codex lifecycle hooks report `PermissionRequest`, `PreToolUse`, `PostToolUse`, and `Stop` events directly through `ai-attn` when `ai-attn setup codex` has installed `~/.codex/hooks.json` and the hooks are trusted in Codex.
 
-The plugin also registers an `alert-bell` hook that filters to codex panes and writes a socket-scoped `waiting` ai-attn record when one rings. This is a fallback for older or untrusted hook setups; other agents are unaffected because they report waiting state through their own integrations. Bell events are logged to `${XDG_STATE_HOME:-~/.local/state}/tmux-ai-attn/bell-hook.log`.
+The plugin deliberately does not translate tmux `alert-bell` events into attention state. A terminal bell is not a reliable lifecycle signal and can arrive after Codex's `Stop` hook, incorrectly replacing `done` with `waiting`. If Codex hooks are unavailable or untrusted, repair that hook setup rather than using a bell fallback.
 
 ## Debugging
 

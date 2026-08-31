@@ -1289,3 +1289,35 @@ func TestBuildFlashStateMatchesOwnSocket(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildFlashStateIgnoresRetiredTerminalBellRecords(t *testing.T) {
+	records := []record{
+		{
+			Agent:     "codex",
+			PaneID:    "%15",
+			Reason:    "agent-stop",
+			UpdatedAt: 100,
+			State:     "done",
+		},
+		{
+			Agent:     "codex",
+			PaneID:    "%15",
+			Reason:    "terminal-bell",
+			UpdatedAt: 101,
+			State:     "waiting",
+		},
+	}
+	paneToWindow := map[string]string{"%15": "@2"}
+	windows := map[string]struct{}{"@2": {}}
+	activeWindows := map[string]struct{}{"@2": {}}
+	seenAt := map[string]int64{"@2": 0}
+
+	state, _ := buildFlashState(records, paneToWindow, windows, activeWindows, seenAt, 102, 3, "")
+
+	if got := state.StatefulPanes["%15"].State; got != "done" {
+		t.Fatalf("expected direct lifecycle state to win, got %q", got)
+	}
+	if state.WaitingWindows["@2"] != 0 || state.WindowsFlashing["@2"] {
+		t.Fatal("retired terminal-bell record must not create waiting state")
+	}
+}

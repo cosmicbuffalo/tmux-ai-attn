@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.4 — 2026-08-31
+
+- Remove the Codex terminal-bell fallback. Codex lifecycle hooks are the sole attention-state writer because a terminal bell can arrive after `Stop` and incorrectly overwrite `done` with `waiting`.
+- Ignore legacy `terminal-bell` records and unregister old plugin hooks during upgrade, so existing false waiting state no longer lights up tmux while the records age out.
+
 ## 0.3.3 — 2026-08-04
 
 - Route unscoped records from detached agent runtimes, including Claude background agents, by exact agent and working directory when that pair identifies exactly one pane.

@@ -69,7 +69,7 @@ If `ai-attn` is installed but not on `PATH`, note the full path — it will be n
 
 Hook wiring lives in the ai-attn project, not here. Read [ai-attn's AGENTS.md](https://github.com/cosmicbuffalo/ai-attn/blob/main/AGENTS.md) and follow the per-agent instructions for whichever CLIs the user actually uses (Claude Code, Codex, OpenCode). That file knows how to edit `~/.claude/settings.json`, `~/.codex/hooks.json`, and `~/.config/opencode/opencode.jsonc` correctly.
 
-**Codex note:** Current Codex lifecycle hooks can report `PermissionRequest`, `PreToolUse`, and `PostToolUse` directly once `ai-attn setup codex` has installed `~/.codex/hooks.json` and the hooks are trusted in Codex. `tmux-ai-attn` still registers a tmux `alert-bell` fallback for older or untrusted hook setups.
+**Codex note:** Codex lifecycle hooks report `PermissionRequest`, `PreToolUse`, `PostToolUse`, and `Stop` directly once `ai-attn setup codex` has installed `~/.codex/hooks.json` and the hooks are trusted in Codex. `tmux-ai-attn` intentionally does not use tmux `alert-bell` as a fallback: a terminal bell can arrive after `Stop` and turn a completed session into a false `waiting` state. Repair or trust the Codex hooks instead.
 
 When you're done, return here for Step 4.
 
