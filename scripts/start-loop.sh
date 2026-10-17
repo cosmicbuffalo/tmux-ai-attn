@@ -57,7 +57,7 @@ pid_is_daemon() {
 }
 
 # Invoked indirectly by trap after acquire_lock succeeds.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 release_lock() {
   local owner
   if [ "$LOCK_HELD" -ne 1 ]; then
