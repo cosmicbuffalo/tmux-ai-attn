@@ -854,8 +854,62 @@ func tmuxBatch(socket string, args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	_, err := tmux(socket, args...)
-	return err
+
+	// tmux rejects a command string longer than its internal limit with
+	// "command too long" and discards the ENTIRE batch, so every option in it
+	// is silently lost. Split on ";" boundaries so each invocation stays small.
+	const maxBatchBytes = 4000
+
+	var (
+		chunk     []string
+		chunkSize int
+		cmd       []string
+		cmdSize   int
+	)
+
+	flush := func() error {
+		for len(chunk) > 0 && chunk[len(chunk)-1] == ";" {
+			chunk = chunk[:len(chunk)-1]
+		}
+		if len(chunk) == 0 {
+			chunkSize = 0
+			return nil
+		}
+		_, err := tmux(socket, chunk...)
+		chunk = nil
+		chunkSize = 0
+		return err
+	}
+
+	appendCmd := func() error {
+		if len(cmd) == 0 {
+			return nil
+		}
+		if chunkSize > 0 && chunkSize+cmdSize > maxBatchBytes {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+		chunk = append(chunk, cmd...)
+		chunkSize += cmdSize
+		cmd = nil
+		cmdSize = 0
+		return nil
+	}
+
+	for _, a := range args {
+		cmd = append(cmd, a)
+		cmdSize += len(a) + 1
+		if a == ";" {
+			if err := appendCmd(); err != nil {
+				return err
+			}
+		}
+	}
+	if err := appendCmd(); err != nil {
+		return err
+	}
+	return flush()
 }
 
 // tmuxRefreshClientBestEffort asks tmux to redraw the status bar, silently ignoring
