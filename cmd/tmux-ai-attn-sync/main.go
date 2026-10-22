@@ -193,6 +193,40 @@ type syncer struct {
 	windowFlashStartedAt map[string]int64
 	flashPhaseCounter    int
 	flashTickCounter     int
+	// updateFailures counts consecutive syncs whose tmux option update failed.
+	updateFailures int
+}
+
+// updateFailuresBeforeError is how many consecutive failed updates it takes
+// to report the failure in @ai_attn_last_error. A lone failure (a busy server
+// timing out) is only logged.
+const updateFailuresBeforeError = 3
+
+// noteUpdate records the outcome of a sync's tmux option update. A failure
+// that persists is published in @ai_attn_last_error, where status lines and
+// pmux already look, instead of only in the daemon log; the next successful
+// update clears it unless the ai-attn query failed this cycle.
+func (s *syncer) noteUpdate(err, queryErr error) {
+	if err == nil {
+		if s.updateFailures >= updateFailuresBeforeError && queryErr == nil {
+			if setErr := tmuxSetGlobal(s.socket, "@ai_attn_last_error", ""); setErr != nil {
+				logf("%v", setErr)
+			}
+		}
+		if s.updateFailures > 0 {
+			logf("tmux option updates recovered after %d failed syncs", s.updateFailures)
+		}
+		s.updateFailures = 0
+		return
+	}
+	s.updateFailures++
+	logf("%v", err)
+	if s.updateFailures == updateFailuresBeforeError {
+		msg := clip("tmux-ai-attn-sync cannot update tmux options: "+err.Error(), 200)
+		if setErr := tmuxSetGlobal(s.socket, "@ai_attn_last_error", msg); setErr != nil {
+			logf("%v", setErr)
+		}
+	}
 }
 
 // run parses flags, sets up fsnotify and signal handling, and enters the main sync loop.
@@ -217,7 +251,7 @@ func run() int {
 	// Write our own PID file (atomically) and clean up on exit.
 	if pidfile != "" {
 		if err := writePIDFile(pidfile); err != nil {
-			fmt.Fprintf(os.Stderr, "pidfile: %v\n", err)
+			logf("pidfile: %v", err)
 			return 1
 		}
 		defer os.Remove(pidfile)
@@ -230,18 +264,18 @@ func run() int {
 	// Set up fsnotify watcher on the ai-attn state directory.
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fsnotify: %v\n", err)
+		logf("fsnotify: %v", err)
 		return 1
 	}
 	defer watcher.Close()
 
 	dir := aiAttnStateDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "mkdir %s: %v\n", dir, err)
+		logf("mkdir %s: %v", dir, err)
 		return 1
 	}
 	if err := watcher.Add(dir); err != nil {
-		fmt.Fprintf(os.Stderr, "watch %s: %v\n", dir, err)
+		logf("watch %s: %v", dir, err)
 		return 1
 	}
 
@@ -329,7 +363,7 @@ func run() int {
 			if !ok {
 				return 0
 			}
-			fmt.Fprintf(os.Stderr, "fsnotify error: %v\n", err)
+			logf("fsnotify error: %v", err)
 		}
 	}
 }
@@ -372,7 +406,7 @@ func tmuxServerIsGone(socket string, err error) bool {
 func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duration) {
 	globals, err := tmuxGetGlobalOptions(s.socket, "@ai_attn_")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "tmux error: %v\n", err)
+		logf("tmux error: %v", err)
 		if tmuxServerIsGone(s.socket, err) {
 			return true, 0
 		}
@@ -434,7 +468,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 
 	paneLines, err := tmux(s.socket, "list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{@ai_attn_window_seen_at}\t#{pane_current_command}\t#{pane_current_path}")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logf("%v", err)
 		return false, 0
 	}
 
@@ -473,7 +507,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 
 	clientWindowLines, err := tmux(s.socket, "list-clients", "-F", "#{window_id}")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logf("%v", err)
 		return false, 0
 	}
 	activeWindows := map[string]struct{}{}
@@ -562,12 +596,10 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		batch := appendWorkingSpinnerUpdates(
 			nil, windowStates, state.WindowsFlashing, nextFlashPhase, spinnerFrame, segCfg,
 		)
-		if err := tmuxBatch(s.socket, batch); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		}
+		s.noteUpdate(tmuxBatch(s.socket, batch), queryErr)
 		if isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
 			if err := tmuxRefreshClientBestEffort(s.socket); err != nil {
-				fmt.Fprintln(os.Stderr, err)
+				logf("%v", err)
 			}
 		}
 		return false, tickForState(state, tickMs, flashMultiplier)
@@ -608,12 +640,10 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	batch = appendGlobalOption(batch, "@ai_attn_state_hash", nextStateHash)
 	batch = appendGlobalOption(batch, "@ai_attn_spinner_frame", spinnerFrame)
 
-	if err := tmuxBatch(s.socket, batch); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-	}
+	s.noteUpdate(tmuxBatch(s.socket, batch), queryErr)
 	if isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
 		if err := tmuxRefreshClientBestEffort(s.socket); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			logf("%v", err)
 		}
 	}
 
@@ -841,10 +871,10 @@ func tmux(socket string, args ...string) (string, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("tmux %s: timed out after 5s", strings.Join(args, " "))
+			return "", fmt.Errorf("tmux %s: timed out after 5s", describeArgs(args))
 		}
 		if ee, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("tmux %s: %s", strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)))
+			return "", fmt.Errorf("tmux %s: %s", describeArgs(args), strings.TrimSpace(string(ee.Stderr)))
 		}
 		return "", err
 	}

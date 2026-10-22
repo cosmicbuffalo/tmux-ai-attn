@@ -55,6 +55,10 @@ done
 if [ "$clear" -eq 1 ]; then
   exit 0
 fi
+if [ -n "${FAKE_DAEMON_FAIL:-}" ]; then
+  printf '%s\n' "$FAKE_DAEMON_FAIL" >&2
+  exit 1
+fi
 
 printf '%s\n' "$$" > "$pidfile"
 printf '%s\t%s\n' "$socket" "$$" >> "$AI_ATTN_DAEMON_LOG"
@@ -79,6 +83,12 @@ case "${1:-}" in
 esac
 FAKE_TMUX
 
+cat > "$fake_bin/df" <<'FAKE_DF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'tmpfs 3200000 0 %s 0%% /run\n' "${FAKE_DF_AVAIL:-3200000}"
+FAKE_DF
+
 cat > "$fake_bin/ai-attn" <<'FAKE_AI_ATTN'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then
@@ -100,6 +110,7 @@ chmod +x \
   "$plugin_dir/scripts/ensure-binary.sh" \
   "$plugin_dir/bin/tmux-ai-attn-sync" \
   "$fake_bin/tmux" \
+  "$fake_bin/df" \
   "$fake_bin/ai-attn" \
   "$fake_bin/ai-attn-old"
 : > "$daemon_log"
@@ -184,5 +195,20 @@ socket_old="/tmp/tmux/old-ai-attn"
 TEST_AI_ATTN="$fake_bin/ai-attn-old" start_loop "$socket_old"
 test ! -e "$(pidfile_for "$socket_old")"
 grep -Fq "ai-attn >= v0.3.2 required" "$tmux_log"
+
+# A daemon that dies at launch reports its last log line.
+socket_fail="/tmp/tmux/fail"
+if FAKE_DAEMON_FAIL="watch /nowhere: permission denied" start_loop "$socket_fail"; then
+  echo "expected a failed launch to exit non-zero" >&2
+  exit 1
+fi
+grep -Fq "failed to start: watch /nowhere: permission denied" "$tmux_log"
+
+# A full runtime directory is named as the cause, since the log stays empty.
+if FAKE_DAEMON_FAIL="pidfile: write failed" FAKE_DF_AVAIL=0 start_loop "$socket_fail"; then
+  echo "expected a failed launch to exit non-zero" >&2
+  exit 1
+fi
+grep -Fq "failed to start: no space left in $run_dir" "$tmux_log"
 
 echo "start-loop tests passed"

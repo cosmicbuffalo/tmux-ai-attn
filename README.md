@@ -218,7 +218,7 @@ The plugin writes these tmux user options on each sync cycle. Use them in your f
 | `@ai_attn_waiting_windows` | integer | Number of windows containing at least one waiting pane. |
 | `@ai_attn_flash_phase` | `0` / `1` | Alternates on each sync tick (~480ms) while any pane is waiting or any window is flashing. Use in format strings to create a flashing effect. |
 | `@ai_attn_spinner_frame` | string | Current spinner animation frame character. Updated at ~120ms intervals when any pane is in `working` state. Empty when no pane is working. |
-| `@ai_attn_last_error` | string | Empty on success. Contains the error message if `ai-attn` or tmux communication failed on the last sync. |
+| `@ai_attn_last_error` | string | Empty on success. Contains the error message if the `ai-attn` query failed, if updating tmux options failed on several consecutive syncs, or why the daemon failed to start. |
 | `@ai_attn_state_hash` | string | Internal. Used to skip redundant updates when state has not changed. |
 
 ### Per-window options
@@ -372,6 +372,10 @@ LOG_DIR="${LOG_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-ai-attn/run}"
 ls "$LOG_DIR"/tmux-ai-attn-*.log
 cat "$LOG_DIR"/tmux-ai-attn-*.log
 ```
+
+The log is kept small: each message is clipped, a repeated message is
+written at most once every five minutes with a count of the copies skipped,
+and the daemon empties the log once it passes 1 MB.
 
 ### Check for errors
 

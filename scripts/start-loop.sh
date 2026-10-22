@@ -175,7 +175,9 @@ BIN="$CURRENT_DIR/bin/tmux-ai-attn-sync"
 # Configuration options are preserved; only runtime state is cleared.
 "$BIN" --tmux-socket "$SOCKET" --clear 2>/dev/null || true
 
-nohup "$BIN" --tmux-socket "$SOCKET" --pidfile "$PIDFILE" >"$LOGFILE" 2>&1 &
+# Append mode lets the daemon truncate its own log when it grows too large.
+: > "$LOGFILE" 2>/dev/null || true
+nohup "$BIN" --tmux-socket "$SOCKET" --pidfile "$PIDFILE" >>"$LOGFILE" 2>&1 &
 DAEMON_PID=$!
 
 # Keep the launch lock until the daemon has published and owns its PID file.
@@ -188,6 +190,20 @@ for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   sleep 0.05
 done
 
-tmux set-option -gq @ai_attn_last_error \
-  "tmux-ai-attn-sync failed to start (see $LOGFILE)"
+# Name the cause where one is visible: a full runtime directory leaves the
+# daemon unable to write its PID file or log, so the log would be empty.
+reason=""
+avail_kb="$(df -Pk "$RUN_DIR" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)"
+if [[ "$avail_kb" =~ ^[0-9]+$ ]] && [ "$avail_kb" -lt 64 ]; then
+  reason="no space left in $RUN_DIR; free space there and restart"
+else
+  reason="$(grep -v '^[[:space:]]*$' "$LOGFILE" 2>/dev/null | tail -n 1 | cut -c 1-160 || true)"
+fi
+if [ -n "$reason" ]; then
+  tmux set-option -gq @ai_attn_last_error \
+    "tmux-ai-attn-sync failed to start: $reason (see $LOGFILE)"
+else
+  tmux set-option -gq @ai_attn_last_error \
+    "tmux-ai-attn-sync failed to start (see $LOGFILE)"
+fi
 exit 1
