@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.5 — 2026-10-22
 
 - Keep the daemon log bounded. Messages are clipped, a repeated message is logged at most once every five minutes with a count of the copies skipped, tmux errors summarize a batch instead of echoing it, and the daemon empties its log past 1 MB. Previously a failure on every tick logged the whole command each time and could fill the small tmpfs holding the log.
 - Report persistent failures to update tmux options in `@ai_attn_last_error` after three consecutive failed syncs, and clear it once an update succeeds.
