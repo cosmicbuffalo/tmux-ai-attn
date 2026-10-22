@@ -1,7 +1,8 @@
 # Changelog
 
-## 0.3.4 — 2026-08-31
+## 0.3.4 — 2026-10-22
 
+- Send tmux option updates in chunks of whole commands. tmux rejects a command string past its length limit and drops the whole batch, so with many agents every option in a sync was silently lost.
 - Remove the Codex terminal-bell fallback. Codex lifecycle hooks are the sole attention-state writer because a terminal bell can arrive after `Stop` and incorrectly overwrite `done` with `waiting`.
 - Ignore legacy `terminal-bell` records and unregister old plugin hooks during upgrade, so existing false waiting state no longer lights up tmux while the records age out.
 
