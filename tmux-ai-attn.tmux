@@ -124,19 +124,12 @@ for hook in client-attached client-session-changed session-created after-new-ses
   ensure_hook_contains "$hook" "$HOOK_COMMAND"
 done
 
-# alert-bell -> ai-attn waiting record (codex only).
-#
-# Current Codex lifecycle hooks can report PermissionRequest and tool activity
-# directly through ai-attn. Codex also emits a terminal bell on permission
-# prompts, so routing alert-bell through bell-to-ai-attn.sh keeps a fallback for
-# older or untrusted hook setups. The script filters to codex panes; other
-# agents have their own hook integrations that report waiting state directly.
-BELL_SCRIPT="$CURRENT_DIR/scripts/bell-to-ai-attn.sh"
-# shellcheck disable=SC2016
-BELL_HOOK_SH='[ -x "'"$BELL_SCRIPT"'" ] && "'"$BELL_SCRIPT"'" "#{pane_current_command}" "#{pane_start_command}" "#{pane_id}" "#{pane_current_path}" "#{@ai_attn_cli}" "#{socket_path}"'
-BELL_HOOK_COMMAND="run-shell -b '$BELL_HOOK_SH'"
+# Codex lifecycle hooks are the only source of Codex attention state. A
+# terminal bell is not a lifecycle event and can occur after Codex's Stop hook
+# has already reported `done`, producing a false `waiting` state. Keep this
+# cleanup for one release cycle so reloading removes the retired plugin hook
+# from upgrades without touching unrelated alert-bell hooks.
 clear_plugin_hooks "alert-bell"
-ensure_hook_contains "alert-bell" "$BELL_HOOK_COMMAND"
 
 if [ "$(tmux show-option -gqv @ai_attn_enable_default_formats)" = "on" ]; then
   tmux set -g status-interval 1

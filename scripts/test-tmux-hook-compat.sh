@@ -22,11 +22,6 @@ cat > "$plugin_dir/scripts/start-loop.sh" <<'EOF'
 exit 0
 EOF
 
-cat > "$plugin_dir/scripts/bell-to-ai-attn.sh" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-
 cat > "$fake_bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -58,12 +53,13 @@ EOF
 chmod +x \
   "$plugin_dir/tmux-ai-attn.tmux" \
   "$plugin_dir/scripts/start-loop.sh" \
-  "$plugin_dir/scripts/bell-to-ai-attn.sh" \
   "$fake_bin/tmux"
 
 cat > "$hooks_file" <<EOF
 client-attached run-shell 'echo user-hook'
 client-attached run-shell -b '$plugin_dir/scripts/start-loop.sh $plugin_dir'
+alert-bell run-shell 'echo user-bell'
+alert-bell run-shell -b '$plugin_dir/scripts/bell-to-ai-attn.sh'
 EOF
 : > "$tmux_log"
 
@@ -75,6 +71,13 @@ PATH="$fake_bin:$PATH" \
 expected=$(printf "set-hook\t-ag\tclient-attached\trun-shell 'echo user-hook'")
 if ! grep -Fqx "$expected" "$tmux_log"; then
   echo "older unindexed user hook was not preserved during reload" >&2
+  cat "$tmux_log" >&2
+  exit 1
+fi
+
+expected_bell=$(printf "set-hook\t-ag\talert-bell\trun-shell 'echo user-bell'")
+if ! grep -Fqx "$expected_bell" "$tmux_log"; then
+  echo "legacy alert-bell fallback was not removed or user hook was not preserved" >&2
   cat "$tmux_log" >&2
   exit 1
 fi

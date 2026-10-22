@@ -694,11 +694,15 @@ func buildFlashState(records []record, paneToWindow map[string]string, windows m
 // agent/CWD match only when it identifies one pane on this server.
 func buildFlashStateWithPaneIdentities(records []record, paneToWindow map[string]string, windows map[string]struct{}, activeWindows map[string]struct{}, seenAtByWindow map[string]int64, nowUnix int64, flashGraceSeconds int64, daemonSocket string, paneIdentities map[string]paneIdentity) (flashState, map[string]int64) {
 	// For each target pane, keep the most recent record with a non-empty
-	// state.  This ensures a newer state from any source overrides an
-	// older one.
+	// state. This ensures a newer state from any source overrides an older one.
+	// terminal-bell was produced by a retired Codex fallback; ignore retained
+	// records during upgrade because a bell can follow a true Stop event.
 	latestByPane := map[string]record{}
 	for _, rec := range records {
 		if rec.State == "" {
+			continue
+		}
+		if rec.Reason == "terminal-bell" {
 			continue
 		}
 		if rec.Socket != "" && daemonSocket != "" && rec.Socket != daemonSocket {
