@@ -109,7 +109,7 @@ AI_ATTN_CLI="${AI_ATTN_CLI:-ai-attn}"
 REQUIRED_AI_ATTN_VERSION="0.3.2"
 if ! command -v "$AI_ATTN_CLI" >/dev/null 2>&1; then
   tmux set-option -gq @ai_attn_last_error \
-    "ai-attn not found. Install: curl -fsSL https://raw.githubusercontent.com/cosmicbuffalo/ai-attn/v0.3.2/install.sh | bash"
+    "ai-attn not found. Install: curl -fsSL https://github.com/cosmicbuffalo/ai-attn/releases/latest/download/install.sh | bash"
   exit 0
 fi
 
