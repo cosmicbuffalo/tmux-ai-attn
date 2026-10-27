@@ -49,6 +49,28 @@ git clone https://github.com/cosmicbuffalo/tmux-ai-attn ~/.tmux/plugins/tmux-ai-
 run-shell "~/.tmux/plugins/tmux-ai-attn/tmux-ai-attn.tmux"
 ```
 
+### With tmux.rb
+
+If you write your tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb), you can include the plugin's configuration in your own instead of loading `tmux-ai-attn.tmux`. Clone the plugin (or let TPM fetch it) and require its Ruby module:
+
+```ruby
+require File.expand_path("~/.tmux/plugins/tmux-ai-attn/lib/tmux_ai_attn")
+
+Tmux.configure do
+  # The plugin with its defaults...
+  use TmuxAiAttn
+  # ...or with options, named as in Configuration without the @ai_attn_ prefix:
+  # append TmuxAiAttn.config(seen_flash_seconds: 30, flash_multiplier: 8)
+
+  # Optional: the default window tabs, as tmux.rb formats.
+  global.status.interval = 1
+  window.status.format = TmuxAiAttn.window_status_format
+  window.status.current_format = TmuxAiAttn.window_status_current_format
+end
+```
+
+Options passed to `TmuxAiAttn.config` replace any value already set; the others get their defaults only when unset. The plugin's hooks use a fixed slot, so rebuilding and reloading your configuration replaces them instead of adding copies, and loading the plugin through TPM as well is harmless. tmux.rb is never needed to use the plugin: `tmux-ai-attn.tmux` loads a precompiled `tmux-ai-attn.conf`.
+
 Reload your tmux config:
 
 ```bash

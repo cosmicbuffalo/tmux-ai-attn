@@ -37,13 +37,44 @@ jobs:
       - name: Test tmux hook compatibility
         run: bash scripts/test-tmux-hook-compat.sh
 
+      - name: Install tmux
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update && sudo apt-get install -y tmux
+          else
+            brew install tmux
+          fi
+
+      - name: Test tmux conf
+        run: bash scripts/test-tmux-conf.sh
+
       - name: Install shellcheck
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+        run: sudo apt-get install -y shellcheck
 
       - name: Lint shell scripts
         if: runner.os == 'Linux'
         run: shellcheck scripts/*.sh tmux-ai-attn.tmux
+
+  # A job of its own: setup-ruby installs gems into vendor/, which Go would
+  # read as a module vendor directory.
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Check tmux-ai-attn.conf matches lib/tmux_ai_attn.rb
+        run: bundle exec ruby spec/compiled_config_spec.rb
 
   build-release:
     if: |
@@ -90,7 +121,7 @@ jobs:
 
   tag_version:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test]
+    needs: [test, spec]
     runs-on: ubuntu-latest
     permissions:
       contents: write

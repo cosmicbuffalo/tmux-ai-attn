@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Write the plugin's tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb). `lib/tmux_ai_attn.rb` compiles to `tmux-ai-attn.conf`, which `tmux-ai-attn.tmux` loads, so installing the plugin still needs neither Ruby nor tmux.rb. tmux.rb configurations can include the plugin with `use TmuxAiAttn`.
+- Register the plugin's hooks in array slot 50 so reloading replaces them. Reloading still removes hooks earlier releases appended elsewhere.
+- Start the sync loop in the background while the configuration loads, and work out the hook log path when a hook fires rather than when it is registered.
+
 ## 0.3.5 — 2026-10-22
 
 - Keep the daemon log bounded. Messages are clipped, a repeated message is logged at most once every five minutes with a count of the copies skipped, tmux errors summarize a batch instead of echoing it, and the daemon empties its log past 1 MB. Previously a failure on every tick logged the whole command each time and could fill the small tmpfs holding the log.

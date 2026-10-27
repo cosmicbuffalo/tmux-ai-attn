@@ -27,15 +27,6 @@ cat > "$fake_bin/tmux" <<'EOF'
 set -euo pipefail
 
 case "${1:-}" in
-  show-options)
-    exit 0
-    ;;
-  show-option)
-    if [ "${*: -1}" = "@ai_attn_enable_default_formats" ]; then
-      printf 'off\n'
-    fi
-    exit 0
-    ;;
   show-hooks)
     cat "$FAKE_TMUX_HOOKS"
     exit 0

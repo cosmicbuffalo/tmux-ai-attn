@@ -27,7 +27,11 @@ This requires Go 1.23+.
 ## Project Structure
 
 ```
-tmux-ai-attn.tmux                  # Plugin entrypoint (sourced by TPM)
+tmux-ai-attn.tmux                  # Plugin entrypoint (sourced by TPM); loads tmux-ai-attn.conf
+tmux-ai-attn.conf                  # Generated tmux configuration (do not edit)
+tmux-ai-attn.rb                    # tmux.rb source of tmux-ai-attn.conf
+lib/tmux_ai_attn.rb                # The plugin's tmux configuration, in tmux.rb
+spec/compiled_config_spec.rb       # Fails while tmux-ai-attn.conf is stale
 cmd/tmux-ai-attn-sync/
   main.go                          # Long-running sync daemon
   main_test.go                     # Tests
@@ -45,7 +49,9 @@ make build          # build the helper binary locally
 make test           # run all tests
 make format         # format Go source with gofmt
 make lint           # run go vet
-make check          # run the full pre-push check suite (gofmt, build, vet, test, shellcheck) — same as CI
+make conf           # compile lib/tmux_ai_attn.rb into tmux-ai-attn.conf
+make spec           # check tmux-ai-attn.conf is up to date, and test the Ruby module
+make check          # run the full pre-push check suite (gofmt, build, vet, test, specs, shellcheck) — same as CI
 make install-hooks  # install a git pre-push hook that runs `make check` when pushing main (recommended)
 make clean          # remove locally built binary
 ```
@@ -66,6 +72,18 @@ The sync daemon is a single `main` package with no external dependencies. Key fu
 - `buildFlashState()` — Core algorithm: maps ai-attn records to waiting/flash state per window and pane
 
 When adding features, prefer keeping the subprocess count low. Batch tmux reads/writes where possible.
+
+### tmux configuration (`lib/tmux_ai_attn.rb`)
+
+The plugin's tmux configuration (option defaults, starting the sync loop, hooks, and the optional default formats) is written in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb). Edit `lib/tmux_ai_attn.rb`, never `tmux-ai-attn.conf`, then regenerate and commit the compiled file:
+
+```bash
+bundle install   # once; needs Ruby 3.2+ and tmux. Not into vendor/: Go reads that as module vendoring
+make conf
+make spec
+```
+
+`make spec` (and CI) fails while `tmux-ai-attn.conf` differs from what tmux.rb compiles, and prints the diff. `scripts/test-tmux-conf.sh` loads the compiled file into a throwaway tmux server. The same module is what tmux.rb users include with `use TmuxAiAttn`, so keep its public methods (`config`, `to_config`, `window_status_format`, `window_status_current_format`) working.
 
 ### Shell scripts
 

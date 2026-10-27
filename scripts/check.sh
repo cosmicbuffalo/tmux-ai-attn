@@ -30,6 +30,16 @@ bash scripts/test-start-loop.sh
 step "tmux hook compatibility tests"
 bash scripts/test-tmux-hook-compat.sh
 
+step "tmux conf tests"
+bash scripts/test-tmux-conf.sh
+
+step "tmux.rb spec"
+if command -v bundle >/dev/null 2>&1 && bundle check >/dev/null 2>&1; then
+    bundle exec ruby spec/compiled_config_spec.rb
+else
+    echo "Ruby gems not installed (run 'bundle install') — skipping (CI will still run it)." >&2
+fi
+
 step "shellcheck"
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck scripts/*.sh tmux-ai-attn.tmux
