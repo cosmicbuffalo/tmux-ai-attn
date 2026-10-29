@@ -6,6 +6,7 @@
 - Register the plugin's hooks in array slot 50 so reloading replaces them. Loading the plugin, by either path, removes only the hooks earlier releases appended in other slots, without renumbering other hooks.
 - Leave a running sync loop alone when the plugin loads again unless its binary changed, so loading the plugin twice (from a tmux.rb configuration and TPM) or reloading no longer restarts it and clears the indicators.
 - Work out the hook log path when a hook fires rather than when it is registered.
+- Keep concurrent binary downloads from corrupting each other. Plugin checkouts sharing the download cache (such as TPM's and pmux's) used one temporary file, so one could install another's partial download and record it as current, leaving the daemon unable to start until the binary was deleted. Each download and build now uses private files and renames them into place once complete.
 
 ## 0.3.5 — 2026-10-22
 

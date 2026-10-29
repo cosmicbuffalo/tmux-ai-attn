@@ -34,6 +34,9 @@ jobs:
       - name: Test daemon launcher
         run: bash scripts/test-start-loop.sh
 
+      - name: Test binary download
+        run: bash scripts/test-ensure-binary.sh
+
       - name: Test tmux hook compatibility
         run: bash scripts/test-tmux-hook-compat.sh
 

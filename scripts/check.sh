@@ -27,6 +27,9 @@ go test ./...
 step "daemon launcher tests"
 bash scripts/test-start-loop.sh
 
+step "binary download tests"
+bash scripts/test-ensure-binary.sh
+
 step "tmux hook compatibility tests"
 bash scripts/test-tmux-hook-compat.sh
 
