@@ -5,7 +5,7 @@
 # loads the compiled file into a real tmux server.
 require "minitest/autorun"
 require "tmpdir"
-require_relative "../lib/tmux_ai_attn"
+require_relative "../lib/tmux-ai-attn"
 
 ENTRY = File.join(TmuxAiAttn::ROOT, "tmux-ai-attn.rb")
 COMPILED = File.join(TmuxAiAttn::ROOT, "tmux-ai-attn.conf")
@@ -16,7 +16,7 @@ describe "tmux-ai-attn.conf" do
     actual = File.read(COMPILED)
 
     assert expected == actual, <<~MESSAGE
-      tmux-ai-attn.conf is out of date with lib/tmux_ai_attn.rb.
+      tmux-ai-attn.conf is out of date with lib/tmux-ai-attn.rb.
       Run `make conf` and commit the result.
 
       #{diff(expected)}

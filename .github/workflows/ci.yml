@@ -73,7 +73,7 @@ jobs:
           ruby-version: "3.4"
           bundler-cache: true
 
-      - name: Check tmux-ai-attn.conf matches lib/tmux_ai_attn.rb
+      - name: Check tmux-ai-attn.conf matches lib/tmux-ai-attn.rb
         run: bundle exec ruby spec/compiled_config_spec.rb
 
   build-release:

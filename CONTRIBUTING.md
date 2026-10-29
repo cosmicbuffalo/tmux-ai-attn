@@ -30,7 +30,7 @@ This requires Go 1.23+.
 tmux-ai-attn.tmux                  # Plugin entrypoint (sourced by TPM); loads tmux-ai-attn.conf
 tmux-ai-attn.conf                  # Generated tmux configuration (do not edit)
 tmux-ai-attn.rb                    # tmux.rb source of tmux-ai-attn.conf
-lib/tmux_ai_attn.rb                # The plugin's tmux configuration, in tmux.rb
+lib/tmux-ai-attn.rb                # The plugin's tmux configuration, in tmux.rb
 spec/compiled_config_spec.rb       # Fails while tmux-ai-attn.conf is stale
 cmd/tmux-ai-attn-sync/
   main.go                          # Long-running sync daemon
@@ -49,7 +49,7 @@ make build          # build the helper binary locally
 make test           # run all tests
 make format         # format Go source with gofmt
 make lint           # run go vet
-make conf           # compile lib/tmux_ai_attn.rb into tmux-ai-attn.conf
+make conf           # compile lib/tmux-ai-attn.rb into tmux-ai-attn.conf
 make spec           # check tmux-ai-attn.conf is up to date, and test the Ruby module
 make check          # run the full pre-push check suite (gofmt, build, vet, test, specs, shellcheck) — same as CI
 make install-hooks  # install a git pre-push hook that runs `make check` when pushing main (recommended)
@@ -73,9 +73,9 @@ The sync daemon is a single `main` package with no external dependencies. Key fu
 
 When adding features, prefer keeping the subprocess count low. Batch tmux reads/writes where possible.
 
-### tmux configuration (`lib/tmux_ai_attn.rb`)
+### tmux configuration (`lib/tmux-ai-attn.rb`)
 
-The plugin's tmux configuration (option defaults, starting the sync loop, hooks, and the optional default formats) is written in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb). Edit `lib/tmux_ai_attn.rb`, never `tmux-ai-attn.conf`, then regenerate and commit the compiled file:
+The plugin's tmux configuration (option defaults, starting the sync loop, hooks, and the optional default formats) is written in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb). Edit `lib/tmux-ai-attn.rb`, never `tmux-ai-attn.conf`, then regenerate and commit the compiled file:
 
 ```bash
 bundle install   # once; needs Ruby 3.2+ and tmux. Not into vendor/: Go reads that as module vendoring

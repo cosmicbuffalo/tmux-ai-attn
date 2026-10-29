@@ -14,7 +14,7 @@ format:
 lint:
 	go vet ./...
 
-# tmux-ai-attn.conf is compiled from lib/tmux_ai_attn.rb by tmux.rb (bundle install first).
+# tmux-ai-attn.conf is compiled from lib/tmux-ai-attn.rb by tmux.rb (bundle install first).
 conf:
 	bundle exec tmux.rb build tmux-ai-attn.rb --output tmux-ai-attn.conf
 

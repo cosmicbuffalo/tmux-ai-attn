@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Write the plugin's tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb). `lib/tmux_ai_attn.rb` compiles to `tmux-ai-attn.conf`, which `tmux-ai-attn.tmux` loads, so installing the plugin still needs neither Ruby nor tmux.rb. tmux.rb configurations can include the plugin with `use TmuxAiAttn`.
+- Write the plugin's tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb). `lib/tmux-ai-attn.rb` compiles to `tmux-ai-attn.conf`, which `tmux-ai-attn.tmux` loads, so installing the plugin still needs neither Ruby nor tmux.rb. tmux.rb configurations can include the plugin with `use TmuxAiAttn`.
 - Register the plugin's hooks in array slot 50 so reloading replaces them. Reloading still removes hooks earlier releases appended elsewhere.
 - Start the sync loop in the background while the configuration loads, and work out the hook log path when a hook fires rather than when it is registered.
 

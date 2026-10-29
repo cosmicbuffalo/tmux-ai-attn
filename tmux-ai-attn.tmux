@@ -4,7 +4,7 @@ set -euo pipefail
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The plugin's tmux configuration lives in tmux-ai-attn.conf, compiled by
-# tmux.rb from lib/tmux_ai_attn.rb (see CONTRIBUTING.md). It sets option
+# tmux.rb from lib/tmux-ai-attn.rb (see CONTRIBUTING.md). It sets option
 # defaults, starts the sync loop, and registers its hooks in a fixed array
 # slot, so loading it again replaces them rather than adding copies.
 

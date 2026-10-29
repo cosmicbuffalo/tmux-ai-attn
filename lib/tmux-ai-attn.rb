@@ -11,7 +11,7 @@ require "tmux"
 #
 # A tmux.rb configuration can include the plugin directly:
 #
-#   require File.expand_path("~/.tmux/plugins/tmux-ai-attn/lib/tmux_ai_attn")
+#   require "tmux-ai-attn"   # tmux.rb finds TPM-installed plugins by name
 #
 #   Tmux.configure do
 #     use TmuxAiAttn                                    # the defaults
