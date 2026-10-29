@@ -42,6 +42,7 @@ wait_for_line() {
 
 mkdir -p "$plugin_dir/scripts"
 cp "$repo_root/tmux-ai-attn.tmux" "$repo_root/tmux-ai-attn.conf" "$plugin_dir/"
+cp "$repo_root/scripts/clear-legacy-hooks.sh" "$plugin_dir/scripts/"
 cat > "$plugin_dir/scripts/start-loop.sh" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$loop_log"
@@ -54,7 +55,10 @@ TMUX_AI_ATTN_LOG="$hook_log" tmux_test -f /dev/null new-session -d -s main
 tmux_test set-option -g @ai_attn_seen_flash_seconds 30
 # A stopped daemon leaves '' behind; the default must replace it.
 tmux_test set-option -g @ai_attn_cli ''
-tmux_test set-hook -ag client-attached "run-shell 'echo user-hook'"
+# An upgrade: earlier releases appended their hooks, around the user's own.
+tmux_test set-hook -g 'client-attached[0]' "run-shell -b '$plugin_dir/scripts/start-loop.sh $plugin_dir'"
+tmux_test set-hook -g 'client-attached[1]' "run-shell 'echo user-hook'"
+tmux_test set-hook -g 'alert-bell[0]' "run-shell -b '$plugin_dir/scripts/bell-to-ai-attn.sh'"
 
 load_plugin() {
   TMUX="$socket,0,0" bash "$plugin_dir/tmux-ai-attn.tmux"
@@ -81,8 +85,11 @@ for event in client-attached client-session-changed session-created after-new-se
   count="$(printf '%s\n' "$hooks" | grep -c "^$event\[.*$plugin_dir/scripts/start-loop.sh" || true)"
   [ "$count" -eq 1 ] || fail "$event: expected one plugin hook after two loads, found $count" "$hooks"
 done
-printf '%s\n' "$hooks" | grep -Fq "echo user-hook" \
-  || fail "the user's client-attached hook was lost" "$hooks"
+printf '%s\n' "$hooks" | grep -Fq "client-attached[1] run-shell \"echo user-hook\"" \
+  || fail "the user's client-attached hook was lost or moved" "$hooks"
+if printf '%s\n' "$hooks" | grep -Eq '^(client-attached\[0\]|alert-bell)[[ ]'; then
+  fail "legacy plugin hooks survived the upgrade" "$hooks"
+fi
 if printf '%s\n' "$hooks" | grep -Fq 'TMUX_AI_ATTN_DIR'; then
   fail "a hook kept \$TMUX_AI_ATTN_DIR instead of the plugin path" "$hooks"
 fi

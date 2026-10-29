@@ -94,19 +94,25 @@ module TmuxAiAttn
 
       options = options.to_h { |key, value| [option_name(key), option_value(value)] }
       defaults = DEFAULTS.to_h { |key, value| [option_name(key), value] }.except(*options.keys)
-      start_loop = %("#{plugin_dir}/scripts/start-loop.sh" "#{plugin_dir}")
+      scripts = "#{plugin_dir}/scripts"
+      quiet = ">/dev/null 2>&1 || true"
       hook_command = hook_command(plugin_dir)
       enable_default_formats = Tmux.user_option(:@ai_attn_enable_default_formats)
       tab = window_status_format
       current_tab = window_status_current_format
 
       Tmux.configure do
+        # Settings first: everything below reads them.
         options.each { |name, value| global[name] = value }
         defaults.each do |name, value|
           if?(Tmux.user_option(name) == "") { global[name] = value }
         end
 
-        run_shell "#{start_loop} --restart || true", background: true
+        # Then activation. These run in order, without -b, so the sync loop
+        # starts with exactly the settings made before the plugin loads, as
+        # it did when only TPM loaded it; failures go to @ai_attn_last_error.
+        run_shell %("#{scripts}/clear-legacy-hooks.sh" "#{plugin_dir}" #{hook_index} #{quiet})
+        run_shell %("#{scripts}/start-loop.sh" "#{plugin_dir}" --restart #{quiet})
         HOOKS.each { |event| hook event, hook_command, index: hook_index }
 
         if?(enable_default_formats == "on") do

@@ -36,7 +36,8 @@ cmd/tmux-ai-attn-sync/
   main.go                          # Long-running sync daemon
   main_test.go                     # Tests
 scripts/
-  start-loop.sh                    # Launches the daemon
+  start-loop.sh                    # Launches the daemon, or keeps one already running the current build
+  clear-legacy-hooks.sh            # Removes hooks earlier releases appended (temporary)
   ensure-binary.sh                 # Downloads or builds the binary
 ```
 

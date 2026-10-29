@@ -168,7 +168,16 @@ pid_b="$(cat "$(pidfile_for "$socket_b")")"
 assert_alive "$pid_b"
 test "$pid_b" != "$unrelated_pid"
 
-# A restart replaces a daemon that owns the PID file and exact tmux socket.
+# A restart keeps a daemon that already runs the current build, so loading
+# the plugin twice (tmux.rb config and TPM) does not bounce it.
+start_loop "$socket_a" --restart
+test "$(cat "$(pidfile_for "$socket_a")")" = "$pid_a"
+start_loop "$socket_a" --restart
+test "$(cat "$(pidfile_for "$socket_a")")" = "$pid_a"
+
+# A restart replaces a daemon that owns the PID file and exact tmux socket
+# once the binary changes, as it does when the plugin is updated.
+printf '# rebuilt\n' >> "$plugin_dir/bin/tmux-ai-attn-sync"
 start_loop "$socket_a" --restart
 new_pid_a="$(cat "$(pidfile_for "$socket_a")")"
 assert_alive "$new_pid_a"

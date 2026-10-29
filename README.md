@@ -51,7 +51,7 @@ run-shell "~/.tmux/plugins/tmux-ai-attn/tmux-ai-attn.tmux"
 
 ### With tmux.rb
 
-If you write your tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb), you can include the plugin's configuration in your own instead of loading `tmux-ai-attn.tmux`. Install the plugin with TPM as above (keep the `@plugin` line, so TPM keeps it updated), then require its Ruby module by name:
+If you write your tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb), you can include the plugin's configuration in your own instead of loading `tmux-ai-attn.tmux`. Install the plugin with TPM as above, or clone it anywhere, then require its Ruby module by name:
 
 ```ruby
 require "tmux-ai-attn"
@@ -69,7 +69,11 @@ Tmux.configure do
 end
 ```
 
-Options passed to `TmuxAiAttn.config` replace any value already set; the others get their defaults only when unset. The plugin's hooks use a fixed slot, so rebuilding and reloading your configuration replaces them instead of adding copies, and loading the plugin through TPM as well is harmless. tmux.rb finds the plugin in `$TMUX_PLUGIN_MANAGER_PATH` or TPM's default plugin directories; with tmux.rb 0.2.0 and earlier, which do not, require it by path instead: `require File.expand_path("~/.tmux/plugins/tmux-ai-attn/lib/tmux-ai-attn")`. tmux.rb is never needed to use the plugin: `tmux-ai-attn.tmux` loads a precompiled `tmux-ai-attn.conf`.
+tmux.rb finds a TPM-installed plugin on its own. For a checkout elsewhere, point it there with `TMUX_RB_PLUGIN_PATH=~/src/tmux-ai-attn` or `tmux.rb build --plugin-path ~/src/tmux-ai-attn`. tmux.rb releases without plugin lookup need the path instead: `require File.expand_path("~/src/tmux-ai-attn/lib/tmux-ai-attn")`. The checkout must exist when you build, so a setup script should clone it before building the configuration.
+
+Options passed to `TmuxAiAttn.config` replace any value already set; the others get their defaults only when unset. The plugin starts its sync loop with the settings in effect where it is included, so pass options to `TmuxAiAttn.config`, or set them earlier in your configuration. Loading it again, or also through TPM's `@plugin` line, is harmless: its hooks use a fixed slot, and a sync loop already running the current build is left alone.
+
+tmux.rb is never needed to use the plugin: `tmux-ai-attn.tmux` loads a precompiled `tmux-ai-attn.conf`.
 
 Reload your tmux config:
 
