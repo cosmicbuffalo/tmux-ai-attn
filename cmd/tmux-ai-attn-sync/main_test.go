@@ -212,7 +212,7 @@ func TestTickForStateFlashingWithWorkingReturns120ms(t *testing.T) {
 			"%2": true,
 		},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 120*time.Millisecond {
 		t.Fatalf("expected 120ms tick when working+flashing, got %v", got)
 	}
@@ -227,7 +227,7 @@ func TestTickForStateWorkingOnlyReturns120ms(t *testing.T) {
 		},
 		PanesFlashing: map[string]bool{},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 120*time.Millisecond {
 		t.Fatalf("expected 120ms tick for working state (spinner), got %v", got)
 	}
@@ -241,7 +241,7 @@ func TestTickForStateWaitingReturns10s(t *testing.T) {
 			"%1": {State: "waiting", Agent: "claude"},
 		},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 10*time.Second {
 		t.Fatalf("expected 10s tick for waiting state, got %v", got)
 	}
@@ -255,7 +255,7 @@ func TestTickForStateDoneReturns10s(t *testing.T) {
 			"%1": {State: "done", Agent: "claude"},
 		},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 10*time.Second {
 		t.Fatalf("expected 10s tick for done state, got %v", got)
 	}
@@ -267,7 +267,7 @@ func TestTickForStateIdleReturnsZero(t *testing.T) {
 	state := flashState{
 		StatefulPanes: map[string]record{},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 0 {
 		t.Fatalf("expected 0 tick for idle state, got %v", got)
 	}
@@ -828,7 +828,7 @@ func TestTickForStateWindowFlashOnly(t *testing.T) {
 		PanesFlashing:   map[string]bool{},
 		WindowsFlashing: map[string]bool{"@1": true},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 480*time.Millisecond {
 		t.Fatalf("expected 480ms tick for window-only flash, got %v", got)
 	}
@@ -970,7 +970,7 @@ func TestTickForStateFlashOnlyReturns480ms(t *testing.T) {
 		},
 		PanesFlashing: map[string]bool{"%1": true},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 480*time.Millisecond {
 		t.Fatalf("expected 480ms tick for flash-only, got %v", got)
 	}
@@ -1345,12 +1345,16 @@ func TestParsePaneLinesReadsWindowSeenAt(t *testing.T) {
 type fakeTmux struct {
 	calls   [][]string
 	globals string
+	clients string
 	err     error
 }
 
 func installFakeTmux(t *testing.T) *fakeTmux {
 	t.Helper()
-	f := &fakeTmux{globals: "@ai_attn_refresh_client on\n@ai_attn_spinner_frames a,b\n"}
+	f := &fakeTmux{
+		globals: "@ai_attn_refresh_client on\n@ai_attn_spinner_frames a,b\n",
+		clients: "@1\tattached,focused\n",
+	}
 	t.Cleanup(func() { tmux = execTmux })
 	tmux = func(socket string, args ...string) (string, error) {
 		f.calls = append(f.calls, args)
@@ -1360,7 +1364,7 @@ func installFakeTmux(t *testing.T) *fakeTmux {
 		case "list-panes":
 			return "%1\t@1\t0\tclaude\t/src\n", nil
 		case "list-clients":
-			return "@1\n", nil
+			return f.clients, nil
 		}
 		return "", f.err
 	}
@@ -1502,5 +1506,96 @@ func TestApplyGlobalWritesRecordsOnlyGlobalSets(t *testing.T) {
 	want := map[string]string{"@ai_attn_state_hash": "new", "@ai_attn_spinner_frame": ""}
 	if !reflect.DeepEqual(globals, want) {
 		t.Fatalf("globals = %v, want %v", globals, want)
+	}
+}
+
+func TestPaceForFollowsWhatTheStatusLineCanShow(t *testing.T) {
+	refreshing := map[string]string{"@ai_attn_refresh_client": "on", "status-interval": "1", "focus-events": "on"}
+	if got := paceFor(refreshing, 0, false); !got.paused {
+		t.Fatalf("no clients: %+v, want paused", got)
+	}
+	if got := paceFor(refreshing, 1, true); got != (displayPace{}) {
+		t.Fatalf("focused and refreshing: %+v, want full speed", got)
+	}
+	if got := paceFor(refreshing, 2, false); got.minTick != unfocusedTick {
+		t.Fatalf("unfocused: %+v, want %v", got, unfocusedTick)
+	}
+	// Without focus-events, tmux cannot tell, so nothing slows down.
+	noFocusEvents := map[string]string{"@ai_attn_refresh_client": "on", "focus-events": "off"}
+	if got := paceFor(noFocusEvents, 1, false); got != (displayPace{}) {
+		t.Fatalf("focus-events off: %+v, want full speed", got)
+	}
+	// Without forced redraws, frames faster than status-interval go unseen.
+	timed := map[string]string{"@ai_attn_refresh_client": "off", "status-interval": "2", "focus-events": "on"}
+	if got := paceFor(timed, 1, true); got.minTick != 2*time.Second {
+		t.Fatalf("refresh off: %+v, want 2s", got)
+	}
+	never := map[string]string{"@ai_attn_refresh_client": "off", "status-interval": "0"}
+	if got := paceFor(never, 1, true); !got.paused {
+		t.Fatalf("refresh off and status-interval 0: %+v, want paused", got)
+	}
+}
+
+func TestTickForStatePacesOnlyAnimation(t *testing.T) {
+	working := flashState{StatefulPanes: map[string]record{"%1": {State: "working"}}}
+	waiting := flashState{StatefulPanes: map[string]record{"%1": {State: "done"}}}
+	if got := tickForState(working, 120, 4, displayPace{paused: true}); got != pausedTick {
+		t.Fatalf("paused spinner ticks every %v, want %v", got, pausedTick)
+	}
+	if got := tickForState(working, 120, 4, displayPace{minTick: time.Second}); got != time.Second {
+		t.Fatalf("slowed spinner ticks every %v, want 1s", got)
+	}
+	if got := tickForState(working, 2000, 4, displayPace{minTick: time.Second}); got != 2*time.Second {
+		t.Fatalf("a spinner slower than the floor ticks every %v, want 2s", got)
+	}
+	if got := tickForState(waiting, 120, 4, displayPace{paused: true}); got != ageTick {
+		t.Fatalf("age updates tick every %v while paused, want %v", got, ageTick)
+	}
+	if got := tickForState(flashState{}, 120, 4, displayPace{paused: true}); got != 0 {
+		t.Fatalf("idle ticks every %v, want 0", got)
+	}
+}
+
+func TestParseClientLinesCountsClientsAndFocus(t *testing.T) {
+	windows, clients, focused := parseClientLines("@1\tattached,focused,UTF-8\n@2\tattached,UTF-8\n\n")
+	if clients != 2 || !focused || len(windows) != 2 {
+		t.Fatalf("got %v %d %v", windows, clients, focused)
+	}
+	_, clients, focused = parseClientLines("@1\tattached,UTF-8\n")
+	if clients != 1 || focused {
+		t.Fatalf("unfocused: got %d %v", clients, focused)
+	}
+	if _, clients, _ := parseClientLines(""); clients != 0 {
+		t.Fatalf("no clients: got %d", clients)
+	}
+}
+
+func TestSyncPausesTheSpinnerWithoutClients(t *testing.T) {
+	f := installFakeTmux(t)
+	f.clients = ""
+	s := newWorkingSyncer()
+	if _, tick := s.syncOnce(false); tick != pausedTick {
+		t.Fatalf("tick without clients = %v, want %v", tick, pausedTick)
+	}
+}
+
+func TestGlobalOptionsIncludeWhatPacingNeeds(t *testing.T) {
+	f := installFakeTmux(t)
+	f.globals = "@ai_attn_tick_ms 120\nstatus-interval 1\nstatus on\nfocus-events on\nescape-time 10\n"
+	globals, err := tmuxGetGlobalOptions("s", "@ai_attn_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"@ai_attn_tick_ms": "120", "status-interval": "1", "focus-events": "on"}
+	if len(globals) != len(want) {
+		t.Fatalf("got %v, want %v", globals, want)
+	}
+	for name, value := range want {
+		if globals[name] != value {
+			t.Fatalf("%s = %q, want %q", name, globals[name], value)
+		}
+	}
+	if got := strings.Join(f.calls[0], " "); got != "show-options -gq ; show-options -sq" {
+		t.Fatalf("read with %q, want one call for both", got)
 	}
 }

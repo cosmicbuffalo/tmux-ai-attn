@@ -9,6 +9,7 @@
 - Keep concurrent binary downloads from corrupting each other. Plugin checkouts sharing the download cache (such as TPM's and pmux's) used one temporary file, so one could install another's partial download and record it as current, leaving the daemon unable to start until the binary was deleted. Each download and build now uses private files and renames them into place once complete.
 - Read back when a waiting window was last seen. Since 0.3.3 the daemon misparsed `@ai_attn_window_seen_at`, so a window whose attention signal had been acknowledged started flashing again as soon as you switched away from it.
 - Start one tmux client per spinner tick instead of five. While an agent is working the daemon ticks about eight times a second, and each tick re-read the plugin options, panes, and clients before writing, then redrew in a separate client: about 40 tmux clients a second. Ticks now reuse what tmux reported within the last second (an `ai-attn` change still reads it afresh), and the redraw rides along with the option updates.
+- Animate only as fast as anyone can see. The spinner and flashes pause while no client is attached, tick no faster than `status-interval` when `@ai_attn_refresh_client` is off (tmux would not redraw them sooner), and slow to once a second while no attached terminal has focus (with `focus-events` on). Reading the options this needs adds no tmux client: the session and server options are read in one call.
 
 ## 0.3.5 — 2026-10-22
 

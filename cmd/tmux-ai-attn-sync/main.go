@@ -201,12 +201,57 @@ type syncer struct {
 	globals       map[string]string
 	topo          *paneTopology
 	activeWindows map[string]struct{}
-	readAt        time.Time
+	// clients and focused, read with activeWindows: how many clients are
+	// attached, and whether any of their terminals has focus.
+	clients int
+	focused bool
+	readAt  time.Time
 }
 
 // tmuxReadMaxAge bounds how long animation ticks reuse cached tmux reads, so
 // option edits and window, pane, or client changes are picked up within it.
 const tmuxReadMaxAge = time.Second
+
+// pausedTick is how often an animation ticks while no client is attached:
+// nothing is seen, so it only needs to resume soon after one attaches. State
+// changes still sync at once, from ai-attn's notifications.
+const pausedTick = 5 * time.Second
+
+// unfocusedTick is the fastest an animation ticks while no attached
+// terminal has focus.
+const unfocusedTick = time.Second
+
+// displayPace is how fast the status line can usefully animate. See paceFor.
+type displayPace struct {
+	// paused: no client is attached, so no animation is seen.
+	paused bool
+	// minTick: animation ticks no faster than this.
+	minTick time.Duration
+}
+
+// paceFor works out the display pace from the options and clients tmux
+// reported. With no client attached nothing is seen. Without
+// @ai_attn_refresh_client, tmux redraws the status line only every
+// status-interval seconds (never, at 0), so faster ticks write frames nobody
+// sees. And when tmux tracks focus (focus-events on) and no attached
+// terminal has it, a frame a second is enough.
+func paceFor(globals map[string]string, clients int, focused bool) displayPace {
+	if clients == 0 {
+		return displayPace{paused: true}
+	}
+	var pace displayPace
+	if !isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
+		seconds, err := strconv.Atoi(globals["status-interval"])
+		if err != nil || seconds <= 0 {
+			return displayPace{paused: true}
+		}
+		pace.minTick = time.Duration(seconds) * time.Second
+	}
+	if globals["focus-events"] == "on" && !focused && pace.minTick < unfocusedTick {
+		pace.minTick = unfocusedTick
+	}
+	return pace
+}
 
 // updateFailuresBeforeError is how many consecutive failed updates it takes
 // to report the failure in @ai_attn_last_error. A lone failure (a busy server
@@ -490,23 +535,17 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 			logf("%v", err)
 			return false, 0
 		}
-		clientWindowLines, err := tmux(s.socket, "list-clients", "-F", "#{window_id}")
+		clientLines, err := tmux(s.socket, "list-clients", "-F", "#{window_id}\t#{client_flags}")
 		if err != nil {
 			logf("%v", err)
 			return false, 0
 		}
-		activeWindows := map[string]struct{}{}
-		for _, line := range strings.Split(strings.TrimSpace(clientWindowLines), "\n") {
-			windowID := strings.TrimSpace(line)
-			if windowID == "" {
-				continue
-			}
-			activeWindows[windowID] = struct{}{}
-		}
+		activeWindows, clients, focused := parseClientLines(clientLines)
 		topo := parsePaneLines(paneLines)
-		s.topo, s.activeWindows = &topo, activeWindows
+		s.topo, s.activeWindows, s.clients, s.focused = &topo, activeWindows, clients, focused
 	}
 	topo, activeWindows := s.topo, s.activeWindows
+	pace := paceFor(globals, s.clients, s.focused)
 	paneToWindow, panes, windows, seenAtByWindow := topo.paneToWindow, topo.panes, topo.windows, topo.seenAtByWindow
 
 	state, nextSeenAtByWindow := buildFlashStateWithPaneIdentities(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket, topo.paneIdentities)
@@ -576,7 +615,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	visualChanged := nextStateHash != currentStateHash || nextFlashPhase != currentFlashPhase
 	spinnerChanged := spinnerFrame != globals["@ai_attn_spinner_frame"]
 	if !visualChanged && !clearingStaleError && !spinnerChanged {
-		return false, tickForState(state, tickMs, flashMultiplier)
+		return false, tickForState(state, tickMs, flashMultiplier, pace)
 	}
 
 	// A working spinner normally changes every tick. Keep that hot path small:
@@ -587,7 +626,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 			nil, windowStates, state.WindowsFlashing, nextFlashPhase, spinnerFrame, segCfg,
 		)
 		s.noteUpdate(s.publish(batch), queryErr)
-		return false, tickForState(state, tickMs, flashMultiplier)
+		return false, tickForState(state, tickMs, flashMultiplier, pace)
 	}
 
 	// Batch all updates into a single tmux call.
@@ -633,7 +672,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	}
 	s.noteUpdate(err, queryErr)
 
-	return false, tickForState(state, tickMs, flashMultiplier)
+	return false, tickForState(state, tickMs, flashMultiplier, pace)
 }
 
 // publish sends a sync's option updates, followed by a status redraw when
@@ -751,7 +790,26 @@ func computeWindowStates(statefulPanes map[string]record, paneToWindow map[strin
 // Working panes tick at tickMs for spinner animation, flashing panes tick at
 // tickMs * flashMultiplier for flash animation, other stateful panes need 10s
 // for age text updates, and idle needs no ticking at all.
-func tickForState(state flashState, tickMs int, flashMultiplier int) time.Duration {
+//
+// pace slows the animation ticks (the spinner and flashes) to what the status
+// line can show; the slower age updates are left as they are.
+func tickForState(state flashState, tickMs int, flashMultiplier int, pace displayPace) time.Duration {
+	tick := animationTick(state, tickMs, flashMultiplier)
+	if tick == 0 || tick >= ageTick {
+		return tick
+	}
+	if pace.paused {
+		return pausedTick
+	}
+	return max(tick, pace.minTick)
+}
+
+// ageTick is how often panes with a state, but nothing animating, sync, so
+// their ages stay current.
+const ageTick = 10 * time.Second
+
+// animationTick is the tick interval the state needs at full speed.
+func animationTick(state flashState, tickMs int, flashMultiplier int) time.Duration {
 	spinnerTick := time.Duration(tickMs) * time.Millisecond
 	flashTick := time.Duration(tickMs*flashMultiplier) * time.Millisecond
 	for _, rec := range state.StatefulPanes {
@@ -770,9 +828,30 @@ func tickForState(state flashState, tickMs int, flashMultiplier int) time.Durati
 		}
 	}
 	if len(state.StatefulPanes) > 0 {
-		return 10 * time.Second
+		return ageTick
 	}
 	return 0
+}
+
+// parseClientLines reads list-clients output in the "#{window_id}\t#{client_flags}"
+// format: the windows clients show, how many clients there are, and whether
+// any has focus.
+func parseClientLines(lines string) (activeWindows map[string]struct{}, clients int, focused bool) {
+	activeWindows = map[string]struct{}{}
+	for _, line := range strings.Split(strings.TrimSpace(lines), "\n") {
+		windowID, flags, _ := strings.Cut(strings.TrimSpace(line), "\t")
+		if windowID == "" {
+			continue
+		}
+		clients++
+		activeWindows[windowID] = struct{}{}
+		for _, flag := range strings.Split(flags, ",") {
+			if flag == "focused" {
+				focused = true
+			}
+		}
+	}
+	return activeWindows, clients, focused
 }
 
 // buildFlashState computes the current attention/flash state for all panes and windows
@@ -1091,8 +1170,11 @@ func tmuxSetGlobal(socket, name, value string) error {
 
 // tmuxGetGlobalOptions fetches all global user options matching the given prefix
 // in a single tmux call and returns them as a map of name->value.
+//
+// The global session options and the server options are read in one call, and
+// besides the prefixed options the result has those paceFor needs.
 func tmuxGetGlobalOptions(socket, prefix string) (map[string]string, error) {
-	out, err := tmux(socket, "show-options", "-gq")
+	out, err := tmux(socket, "show-options", "-gq", ";", "show-options", "-sq")
 	if err != nil {
 		return nil, err
 	}
@@ -1101,15 +1183,11 @@ func tmuxGetGlobalOptions(socket, prefix string) (map[string]string, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if !strings.HasPrefix(line, prefix) {
+		name, value, _ := strings.Cut(line, " ")
+		if !strings.HasPrefix(name, prefix) && name != "status-interval" && name != "focus-events" {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 2)
-		name := parts[0]
-		value := ""
-		if len(parts) == 2 {
-			value = strings.TrimPrefix(strings.TrimSuffix(parts[1], "\""), "\"")
-		}
+		value = strings.TrimPrefix(strings.TrimSuffix(value, "\""), "\"")
 		options[name] = value
 	}
 	return options, nil
