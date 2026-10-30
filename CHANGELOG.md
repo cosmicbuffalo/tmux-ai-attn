@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-30
+
+This minor release adds a public tmux.rb integration alongside the existing TPM installation. Existing tmux options and the tmux 3.3a minimum remain unchanged; TPM users still need neither Ruby nor tmux.rb.
 
 - Write the plugin's tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb). `lib/tmux-ai-attn.rb` compiles to `tmux-ai-attn.conf`, which `tmux-ai-attn.tmux` loads, so installing the plugin still needs neither Ruby nor tmux.rb. tmux.rb configurations can include the plugin with `use TmuxAiAttn`.
 - Register the plugin's hooks in array slot 50 so reloading replaces them. Loading the plugin, by either path, removes only the hooks earlier releases appended in other slots, without renumbering other hooks. A hook that something else already keeps in slot 50 is moved to the end of its array, and logged, rather than overwritten.
