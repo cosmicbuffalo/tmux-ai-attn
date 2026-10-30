@@ -2,8 +2,10 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1335,5 +1337,170 @@ func TestParsePaneLinesReadsWindowSeenAt(t *testing.T) {
 	}
 	if got := topo.paneIdentities["%1"]; got != (paneIdentity{Command: "claude", CWD: "/src"}) {
 		t.Fatalf("identity %%1 = %+v", got)
+	}
+}
+
+// fakeTmux replaces tmux for one test, records each invocation, and answers
+// the reads a sync makes with a one-window, one-pane server.
+type fakeTmux struct {
+	calls   [][]string
+	globals string
+	err     error
+}
+
+func installFakeTmux(t *testing.T) *fakeTmux {
+	t.Helper()
+	f := &fakeTmux{globals: "@ai_attn_refresh_client on\n@ai_attn_spinner_frames a,b\n"}
+	t.Cleanup(func() { tmux = execTmux })
+	tmux = func(socket string, args ...string) (string, error) {
+		f.calls = append(f.calls, args)
+		switch args[0] {
+		case "show-options":
+			return f.globals, nil
+		case "list-panes":
+			return "%1\t@1\t0\tclaude\t/src\n", nil
+		case "list-clients":
+			return "@1\n", nil
+		}
+		return "", f.err
+	}
+	return f
+}
+
+func (f *fakeTmux) commands() []string {
+	names := make([]string, len(f.calls))
+	for i, call := range f.calls {
+		names[i] = call[0]
+	}
+	return names
+}
+
+func newWorkingSyncer() *syncer {
+	return &syncer{
+		socket:        "/tmp/tmux-ai-attn-test",
+		cachedPayload: listPayload{Records: []record{{Agent: "claude", PaneID: "%1", State: "working", UpdatedAt: 1}}},
+		hasCached:     true,
+	}
+}
+
+func TestSpinnerTickReusesRecentTmuxReads(t *testing.T) {
+	f := installFakeTmux(t)
+	s := newWorkingSyncer()
+
+	s.syncOnce(false)
+	if got, want := strings.Join(f.commands(), " "), "show-options list-panes list-clients set-window-option"; got != want {
+		t.Fatalf("first sync ran %q, want %q", got, want)
+	}
+
+	// Force a frame change so the tick has something to publish.
+	f.calls = nil
+	s.globals["@ai_attn_spinner_frame"] = "x"
+	s.syncOnce(false)
+	if len(f.calls) != 1 {
+		t.Fatalf("spinner tick ran %d tmux commands (%q), want 1", len(f.calls), f.commands())
+	}
+	call := f.calls[0]
+	if contains(call, "@ai_attn_state_hash") || contains(call, "@ai_attn_pane_state") {
+		t.Fatalf("spinner tick rewrote stable state: %q", call)
+	}
+	if got := strings.Join(call[len(call)-3:], " "); got != "; refresh-client -S" {
+		t.Fatalf("spinner tick ended with %q, want the refresh", got)
+	}
+	if s.globals["@ai_attn_spinner_frame"] == "x" {
+		t.Fatal("cached spinner frame not updated after the write")
+	}
+}
+
+func TestSpinnerTickRereadsStaleTmuxReads(t *testing.T) {
+	f := installFakeTmux(t)
+	s := newWorkingSyncer()
+	s.syncOnce(false)
+
+	f.calls = nil
+	s.readAt = time.Now().Add(-tmuxReadMaxAge)
+	s.globals["@ai_attn_spinner_frame"] = "x"
+	s.syncOnce(false)
+	if got := strings.Join(f.commands(), " "); !strings.HasPrefix(got, "show-options list-panes list-clients") {
+		t.Fatalf("stale tick ran %q, want fresh reads first", got)
+	}
+}
+
+func TestAttnChangeRereadsTmux(t *testing.T) {
+	f := installFakeTmux(t)
+	cli := filepath.Join(t.TempDir(), "ai-attn")
+	script := "#!/bin/sh\necho '{\"records\":[{\"agent\":\"claude\",\"pane_id\":\"%1\",\"state\":\"working\",\"updated_at\":1}]}'\n"
+	if err := os.WriteFile(cli, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.globals += "@ai_attn_cli " + cli + "\n"
+	s := newWorkingSyncer()
+	s.syncOnce(false)
+
+	f.calls = nil
+	s.syncOnce(true)
+	if got := strings.Join(f.commands(), " "); !strings.HasPrefix(got, "show-options list-panes list-clients") {
+		t.Fatalf("ai-attn change ran %q, want fresh reads first", got)
+	}
+}
+
+func TestFailedUpdateDropsCachedTmuxReads(t *testing.T) {
+	f := installFakeTmux(t)
+	s := newWorkingSyncer()
+	f.err = errors.New("tmux set-window-option: timed out after 5s")
+	s.syncOnce(false)
+	if s.globals != nil || s.topo != nil {
+		t.Fatal("cache kept after a failed update")
+	}
+
+	f.calls, f.err = nil, nil
+	s.syncOnce(false)
+	if got := strings.Join(f.commands(), " "); !strings.HasPrefix(got, "show-options list-panes list-clients") {
+		t.Fatalf("sync after a failure ran %q, want fresh reads first", got)
+	}
+}
+
+func TestTmuxBatchRefreshIgnoresNoCurrentClient(t *testing.T) {
+	f := installFakeTmux(t)
+	f.err = errors.New("tmux set-option -gq @a 1 … (2 commands, 30 bytes): no current client")
+	if err := tmuxBatchRefresh("s", []string{"set-option", "-gq", "@a", "1"}, true); err != nil {
+		t.Fatalf("tmuxBatchRefresh = %v, want nil", err)
+	}
+	if err := tmuxBatchRefresh("s", []string{"set-option", "-gq", "@a", "1"}, false); err == nil {
+		t.Fatal("tmuxBatchRefresh without refresh swallowed the error")
+	}
+}
+
+func TestTmuxBatchRefreshRefreshesOnceInFinalChunk(t *testing.T) {
+	f := installFakeTmux(t)
+	var batch []string
+	for i := 0; i < 200; i++ {
+		batch = appendGlobalOption(batch, fmt.Sprintf("@tat_%d", i), strings.Repeat("x", 80))
+	}
+	if err := tmuxBatchRefresh("s", batch, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) < 2 {
+		t.Fatalf("batch sent in %d invocations, want it chunked", len(f.calls))
+	}
+	for i, call := range f.calls {
+		if got := contains(call, "refresh-client"); got != (i == len(f.calls)-1) {
+			t.Fatalf("invocation %d of %d has refresh-client = %v", i+1, len(f.calls), got)
+		}
+	}
+	if last := f.calls[len(f.calls)-1]; last[len(last)-1] != "-S" {
+		t.Fatalf("final invocation ends with %q, want the refresh last", last[len(last)-1])
+	}
+}
+
+func TestApplyGlobalWritesRecordsOnlyGlobalSets(t *testing.T) {
+	globals := map[string]string{"@ai_attn_state_hash": "old"}
+	batch := appendWindowOption(nil, "@1", "@ai_attn_window_segment", "seg")
+	batch = appendGlobalOption(batch, "@ai_attn_state_hash", "new")
+	batch = appendPaneOption(batch, "%1", "@ai_attn_pane_state", "working")
+	batch = appendGlobalOption(batch, "@ai_attn_spinner_frame", "")
+	applyGlobalWrites(globals, batch)
+	want := map[string]string{"@ai_attn_state_hash": "new", "@ai_attn_spinner_frame": ""}
+	if !reflect.DeepEqual(globals, want) {
+		t.Fatalf("globals = %v, want %v", globals, want)
 	}
 }

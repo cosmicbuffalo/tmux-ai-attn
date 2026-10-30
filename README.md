@@ -336,7 +336,7 @@ set -g status-right '\
 3. It maps `ai-attn` records to tmux panes and windows, computes waiting/flash state, aggregates per-window state (priority: `waiting` > `working` > `stopped` > `done`), and pre-renders a `@ai_attn_window_segment` option with the indicator styles for each window.
 4. When any pane is in `working` state, the daemon ticks at ~120ms to drive spinner animation. Spinner-only ticks update just the working window segments and shared frame; stable pane/window state is not rewritten. Flash animation toggles at a configurable multiple of the tick rate (default 4×, giving ~480ms cadence). When only stateful but non-working panes exist, the tick drops to 10s.
 5. If the visual state has not changed since the last sync, no tmux writes are performed. Spinner-only ticks update only working-window segments and the shared frame.
-6. Display-only ticks reuse the cached records, so age text and flash animation updates do not need to respawn `ai-attn` on every timer tick.
+6. Display-only ticks reuse the cached records, so age text and flash animation updates do not need to respawn `ai-attn` on every timer tick. They also reuse the plugin options, panes, windows, and attached clients read from tmux for up to a second, and send their updates and the status redraw in one tmux command, so a spinner tick normally starts a single tmux client.
 7. The binary self-terminates when the tmux server exits (all sessions closed) and cleans up its PID file.
 
 ### Signal path

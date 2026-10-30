@@ -195,7 +195,18 @@ type syncer struct {
 	flashTickCounter     int
 	// updateFailures counts consecutive syncs whose tmux option update failed.
 	updateFailures int
+	// globals, topo, and activeWindows cache the last tmux reads, taken at
+	// readAt, so animation ticks can reuse them instead of spawning three tmux
+	// clients each. nil means the next sync reads them again.
+	globals       map[string]string
+	topo          *paneTopology
+	activeWindows map[string]struct{}
+	readAt        time.Time
 }
+
+// tmuxReadMaxAge bounds how long animation ticks reuse cached tmux reads, so
+// option edits and window, pane, or client changes are picked up within it.
+const tmuxReadMaxAge = time.Second
 
 // updateFailuresBeforeError is how many consecutive failed updates it takes
 // to report the failure in @ai_attn_last_error. A lone failure (a busy server
@@ -404,14 +415,21 @@ func tmuxServerIsGone(socket string, err error) bool {
 // gone and the recommended tick interval for the next display refresh (0 means
 // no tick is needed because no state is being displayed).
 func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duration) {
-	globals, err := tmuxGetGlobalOptions(s.socket, "@ai_attn_")
-	if err != nil {
-		logf("tmux error: %v", err)
-		if tmuxServerIsGone(s.socket, err) {
-			return true, 0
+	// Animation ticks within tmuxReadMaxAge of the last read reuse it; an
+	// ai-attn change or a stale read starts over from tmux.
+	if refreshQuery || s.globals == nil || time.Since(s.readAt) >= tmuxReadMaxAge {
+		s.globals, s.topo, s.activeWindows = nil, nil, nil
+		globals, err := tmuxGetGlobalOptions(s.socket, "@ai_attn_")
+		if err != nil {
+			logf("tmux error: %v", err)
+			if tmuxServerIsGone(s.socket, err) {
+				return true, 0
+			}
+			return false, time.Second // retry
 		}
-		return false, time.Second // retry
+		s.globals, s.readAt = globals, time.Now()
 	}
+	globals := s.globals
 
 	nowUnix := time.Now().Unix()
 
@@ -466,28 +484,30 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		}
 	}
 
-	paneLines, err := tmux(s.socket, "list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{@ai_attn_window_seen_at}\t#{pane_current_command}\t#{pane_current_path}")
-	if err != nil {
-		logf("%v", err)
-		return false, 0
-	}
-
-	topo := parsePaneLines(paneLines)
-	paneToWindow, panes, windows, seenAtByWindow := topo.paneToWindow, topo.panes, topo.windows, topo.seenAtByWindow
-
-	clientWindowLines, err := tmux(s.socket, "list-clients", "-F", "#{window_id}")
-	if err != nil {
-		logf("%v", err)
-		return false, 0
-	}
-	activeWindows := map[string]struct{}{}
-	for _, line := range strings.Split(strings.TrimSpace(clientWindowLines), "\n") {
-		windowID := strings.TrimSpace(line)
-		if windowID == "" {
-			continue
+	if s.topo == nil {
+		paneLines, err := tmux(s.socket, "list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{@ai_attn_window_seen_at}\t#{pane_current_command}\t#{pane_current_path}")
+		if err != nil {
+			logf("%v", err)
+			return false, 0
 		}
-		activeWindows[windowID] = struct{}{}
+		clientWindowLines, err := tmux(s.socket, "list-clients", "-F", "#{window_id}")
+		if err != nil {
+			logf("%v", err)
+			return false, 0
+		}
+		activeWindows := map[string]struct{}{}
+		for _, line := range strings.Split(strings.TrimSpace(clientWindowLines), "\n") {
+			windowID := strings.TrimSpace(line)
+			if windowID == "" {
+				continue
+			}
+			activeWindows[windowID] = struct{}{}
+		}
+		topo := parsePaneLines(paneLines)
+		s.topo, s.activeWindows = &topo, activeWindows
 	}
+	topo, activeWindows := s.topo, s.activeWindows
+	paneToWindow, panes, windows, seenAtByWindow := topo.paneToWindow, topo.panes, topo.windows, topo.seenAtByWindow
 
 	state, nextSeenAtByWindow := buildFlashStateWithPaneIdentities(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket, topo.paneIdentities)
 
@@ -566,12 +586,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		batch := appendWorkingSpinnerUpdates(
 			nil, windowStates, state.WindowsFlashing, nextFlashPhase, spinnerFrame, segCfg,
 		)
-		s.noteUpdate(tmuxBatch(s.socket, batch), queryErr)
-		if isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
-			if err := tmuxRefreshClientBestEffort(s.socket); err != nil {
-				logf("%v", err)
-			}
-		}
+		s.noteUpdate(s.publish(batch), queryErr)
 		return false, tickForState(state, tickMs, flashMultiplier)
 	}
 
@@ -610,14 +625,43 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	batch = appendGlobalOption(batch, "@ai_attn_state_hash", nextStateHash)
 	batch = appendGlobalOption(batch, "@ai_attn_spinner_frame", spinnerFrame)
 
-	s.noteUpdate(tmuxBatch(s.socket, batch), queryErr)
-	if isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
-		if err := tmuxRefreshClientBestEffort(s.socket); err != nil {
-			logf("%v", err)
+	err := s.publish(batch)
+	if err == nil {
+		for windowID, nextSeenAt := range nextSeenAtByWindow {
+			seenAtByWindow[windowID] = nextSeenAt
 		}
 	}
+	s.noteUpdate(err, queryErr)
 
 	return false, tickForState(state, tickMs, flashMultiplier)
+}
+
+// publish sends a sync's option updates, followed by a status redraw when
+// @ai_attn_refresh_client is on, then brings the cached globals in line with
+// what it wrote. A failed update leaves tmux's options unknown, so it drops
+// the cache and the next sync reads tmux again.
+func (s *syncer) publish(batch []string) error {
+	refresh := isTruthy(strings.ToLower(s.globals["@ai_attn_refresh_client"]))
+	if err := tmuxBatchRefresh(s.socket, batch, refresh); err != nil {
+		s.globals, s.topo, s.activeWindows = nil, nil, nil
+		return err
+	}
+	applyGlobalWrites(s.globals, batch)
+	return nil
+}
+
+// applyGlobalWrites records the global options a batch set in globals.
+func applyGlobalWrites(globals map[string]string, batch []string) {
+	start := 0
+	for i := 0; i <= len(batch); i++ {
+		if i < len(batch) && batch[i] != ";" {
+			continue
+		}
+		if cmd := batch[start:i]; len(cmd) == 4 && cmd[0] == "set-option" && cmd[1] == "-gq" {
+			globals[cmd[2]] = cmd[3]
+		}
+		start = i + 1
+	}
 }
 
 // paneTopology is what one list-panes read reports about panes and windows.
@@ -880,9 +924,13 @@ func queryAttn(cli string) (listPayload, error) {
 	return payload, nil
 }
 
-// tmux runs a tmux command against the given socket with a 5-second timeout.
+// tmux runs a tmux command against the given socket. Tests replace it to
+// observe the commands a sync sends.
+var tmux = execTmux
+
+// execTmux runs a tmux command against the given socket with a 5-second timeout.
 // Used by all other tmux helper functions (tmuxBatch, tmuxSetGlobal, etc.).
-func tmux(socket string, args ...string) (string, error) {
+func execTmux(socket string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-S", socket}, args...)...)
@@ -964,14 +1012,20 @@ func tmuxBatch(socket string, args []string) error {
 	return flush()
 }
 
-// tmuxRefreshClientBestEffort asks tmux to redraw the status bar, silently ignoring
-// "no current client" errors. Called from syncOnce when @ai_attn_refresh_client is on.
-func tmuxRefreshClientBestEffort(socket string) error {
-	_, err := tmux(socket, "refresh-client", "-S")
-	if err == nil {
-		return nil
+// tmuxBatchRefresh runs args like tmuxBatch and, when refresh is set, ends the
+// final invocation with "refresh-client -S" to redraw status lines without
+// spawning another client. tmux stops a command sequence at its first failure,
+// so the refresh goes last, and its "no current client" error (no client is
+// attached) is ignored.
+func tmuxBatchRefresh(socket string, args []string, refresh bool) error {
+	if refresh {
+		if len(args) > 0 {
+			args = append(args[:len(args):len(args)], ";")
+		}
+		args = append(args, "refresh-client", "-S")
 	}
-	if strings.Contains(err.Error(), "no current client") {
+	err := tmuxBatch(socket, args)
+	if err != nil && refresh && strings.Contains(err.Error(), "no current client") {
 		return nil
 	}
 	return err
