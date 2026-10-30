@@ -472,38 +472,8 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		return false, 0
 	}
 
-	paneToWindow := map[string]string{}
-	paneIdentities := map[string]paneIdentity{}
-	panes := map[string]struct{}{}
-	windows := map[string]struct{}{}
-	seenAtByWindow := map[string]int64{}
-
-	for _, line := range strings.Split(strings.TrimSpace(paneLines), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 5)
-		if len(parts) < 2 {
-			continue
-		}
-		paneID := parts[0]
-		windowID := parts[1]
-		paneToWindow[paneID] = windowID
-		if len(parts) == 5 {
-			paneIdentities[paneID] = paneIdentity{Command: parts[3], CWD: parts[4]}
-		}
-		panes[paneID] = struct{}{}
-		if _, seen := windows[windowID]; !seen {
-			windows[windowID] = struct{}{}
-			seenAt := int64(0)
-			if len(parts) == 3 {
-				if v, parseErr := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); parseErr == nil {
-					seenAt = v
-				}
-			}
-			seenAtByWindow[windowID] = seenAt
-		}
-	}
+	topo := parsePaneLines(paneLines)
+	paneToWindow, panes, windows, seenAtByWindow := topo.paneToWindow, topo.panes, topo.windows, topo.seenAtByWindow
 
 	clientWindowLines, err := tmux(s.socket, "list-clients", "-F", "#{window_id}")
 	if err != nil {
@@ -519,7 +489,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		activeWindows[windowID] = struct{}{}
 	}
 
-	state, nextSeenAtByWindow := buildFlashStateWithPaneIdentities(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket, paneIdentities)
+	state, nextSeenAtByWindow := buildFlashStateWithPaneIdentities(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket, topo.paneIdentities)
 
 	// Persist window flash for the full grace period once started,
 	// but only while the window still has waiting panes.
@@ -648,6 +618,54 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	}
 
 	return false, tickForState(state, tickMs, flashMultiplier)
+}
+
+// paneTopology is what one list-panes read reports about panes and windows.
+type paneTopology struct {
+	paneToWindow   map[string]string
+	paneIdentities map[string]paneIdentity
+	panes          map[string]struct{}
+	windows        map[string]struct{}
+	seenAtByWindow map[string]int64
+}
+
+// parsePaneLines parses list-panes output in the format syncOnce requests:
+// pane ID, window ID, @ai_attn_window_seen_at, command, and path, tab-separated.
+func parsePaneLines(out string) paneTopology {
+	topo := paneTopology{
+		paneToWindow:   map[string]string{},
+		paneIdentities: map[string]paneIdentity{},
+		panes:          map[string]struct{}{},
+		windows:        map[string]struct{}{},
+		seenAtByWindow: map[string]int64{},
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 5)
+		if len(parts) < 2 {
+			continue
+		}
+		paneID := parts[0]
+		windowID := parts[1]
+		topo.paneToWindow[paneID] = windowID
+		if len(parts) == 5 {
+			topo.paneIdentities[paneID] = paneIdentity{Command: parts[3], CWD: parts[4]}
+		}
+		topo.panes[paneID] = struct{}{}
+		if _, seen := topo.windows[windowID]; !seen {
+			topo.windows[windowID] = struct{}{}
+			seenAt := int64(0)
+			if len(parts) >= 3 {
+				if v, parseErr := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); parseErr == nil {
+					seenAt = v
+				}
+			}
+			topo.seenAtByWindow[windowID] = seenAt
+		}
+	}
+	return topo
 }
 
 // advanceFlashPhase advances the flash-phase state machine by one tick and

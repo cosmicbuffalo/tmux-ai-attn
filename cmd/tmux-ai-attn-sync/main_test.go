@@ -1321,3 +1321,19 @@ func TestBuildFlashStateIgnoresRetiredTerminalBellRecords(t *testing.T) {
 		t.Fatal("retired terminal-bell record must not create waiting state")
 	}
 }
+
+func TestParsePaneLinesReadsWindowSeenAt(t *testing.T) {
+	topo := parsePaneLines("%1\t@1\t1700\tclaude\t/src\n%2\t@1\t1700\tzsh\t/src\n%3\t@2\t\tzsh\t/tmp\n")
+	if got := topo.seenAtByWindow["@1"]; got != 1700 {
+		t.Fatalf("seenAt @1 = %d, want 1700", got)
+	}
+	if got := topo.seenAtByWindow["@2"]; got != 0 {
+		t.Fatalf("seenAt @2 = %d, want 0", got)
+	}
+	if topo.paneToWindow["%2"] != "@1" || len(topo.panes) != 3 || len(topo.windows) != 2 {
+		t.Fatalf("unexpected topology: %+v", topo)
+	}
+	if got := topo.paneIdentities["%1"]; got != (paneIdentity{Command: "claude", CWD: "/src"}) {
+		t.Fatalf("identity %%1 = %+v", got)
+	}
+}

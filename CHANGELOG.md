@@ -7,6 +7,7 @@
 - Leave a running sync loop alone when the plugin loads again unless its binary changed, so loading the plugin twice (from a tmux.rb configuration and TPM) or reloading no longer restarts it and clears the indicators.
 - Work out the hook log path when a hook fires rather than when it is registered.
 - Keep concurrent binary downloads from corrupting each other. Plugin checkouts sharing the download cache (such as TPM's and pmux's) used one temporary file, so one could install another's partial download and record it as current, leaving the daemon unable to start until the binary was deleted. Each download and build now uses private files and renames them into place once complete.
+- Read back when a waiting window was last seen. Since 0.3.3 the daemon misparsed `@ai_attn_window_seen_at`, so a window whose attention signal had been acknowledged started flashing again as soon as you switched away from it.
 
 ## 0.3.5 — 2026-10-22
 
