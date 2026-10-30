@@ -111,7 +111,7 @@ module TmuxAiAttn
         # Then activation. These run in order, without -b, so the sync loop
         # starts with exactly the settings made before the plugin loads, as
         # it did when only TPM loaded it; failures go to @ai_attn_last_error.
-        run_shell %("#{scripts}/clear-legacy-hooks.sh" "#{plugin_dir}" #{hook_index} #{quiet})
+        run_shell %("#{scripts}/prepare-hooks.sh" "#{plugin_dir}" #{hook_index} #{quiet})
         run_shell %("#{scripts}/start-loop.sh" "#{plugin_dir}" --restart #{quiet})
         HOOKS.each { |event| hook event, hook_command, index: hook_index }
 

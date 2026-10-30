@@ -37,7 +37,7 @@ cmd/tmux-ai-attn-sync/
   main_test.go                     # Tests
 scripts/
   start-loop.sh                    # Launches the daemon, or keeps one already running the current build
-  clear-legacy-hooks.sh            # Removes hooks earlier releases appended (temporary)
+  prepare-hooks.sh                 # Frees the plugin's hook slot; removes hooks old releases appended
   ensure-binary.sh                 # Downloads or builds the binary
 ```
 

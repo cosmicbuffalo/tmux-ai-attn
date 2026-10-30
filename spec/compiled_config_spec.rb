@@ -40,7 +40,7 @@ describe TmuxAiAttn do
 
     root = TmuxAiAttn::ROOT
     quiet = ">/dev/null 2>&1 || true"
-    assert_includes conf, %(run-shell "\\"#{root}/scripts/clear-legacy-hooks.sh\\" \\"#{root}\\" 50 #{quiet}")
+    assert_includes conf, %(run-shell "\\"#{root}/scripts/prepare-hooks.sh\\" \\"#{root}\\" 50 #{quiet}")
     assert_includes conf, %(run-shell "\\"#{root}/scripts/start-loop.sh\\" \\"#{root}\\" --restart #{quiet}")
     assert_includes conf, %(if [ -x \\\\\\"#{TmuxAiAttn::ROOT}/scripts/start-loop.sh\\\\\\" ])
     assert_includes conf, %(if-shell -F "\#{==:\#{@ai_attn_seen_flash_seconds},}")
@@ -49,7 +49,7 @@ describe TmuxAiAttn do
   it "applies its settings before starting the sync loop, and starts it before hooking events" do
     lines = compile { use TmuxAiAttn }.lines
     last_setting = lines.rindex { |line| line.include?("set-option -g @ai_attn_") }
-    cleanup, start = %w[clear-legacy-hooks.sh start-loop.sh].map { |script| lines.index { |line| line.start_with?("run-shell") && line.include?(script) } }
+    cleanup, start = %w[prepare-hooks.sh start-loop.sh].map { |script| lines.index { |line| line.start_with?("run-shell") && line.include?(script) } }
     first_hook = lines.index { |line| line.start_with?("set-hook") }
 
     assert_operator last_setting, :<, cleanup
@@ -57,10 +57,10 @@ describe TmuxAiAttn do
     assert_operator start, :<, first_hook
   end
 
-  it "keeps clear-legacy-hooks.sh away from the slot it registers hooks in" do
+  it "keeps prepare-hooks.sh away from the slot it registers hooks in" do
     conf = compile { append TmuxAiAttn.config(hook_index: 7) }
 
-    assert_includes conf, %(clear-legacy-hooks.sh\\" \\"#{TmuxAiAttn::ROOT}\\" 7 )
+    assert_includes conf, %(prepare-hooks.sh\\" \\"#{TmuxAiAttn::ROOT}\\" 7 )
     assert_includes conf, %(set-hook -g "client-attached[7]")
   end
 

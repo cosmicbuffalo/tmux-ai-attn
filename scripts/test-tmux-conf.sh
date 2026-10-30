@@ -42,7 +42,7 @@ wait_for_line() {
 
 mkdir -p "$plugin_dir/scripts"
 cp "$repo_root/tmux-ai-attn.tmux" "$repo_root/tmux-ai-attn.conf" "$plugin_dir/"
-cp "$repo_root/scripts/clear-legacy-hooks.sh" "$plugin_dir/scripts/"
+cp "$repo_root/scripts/prepare-hooks.sh" "$plugin_dir/scripts/"
 cat > "$plugin_dir/scripts/start-loop.sh" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$loop_log"
@@ -59,6 +59,8 @@ tmux_test set-option -g @ai_attn_cli ''
 tmux_test set-hook -g 'client-attached[0]' "run-shell -b '$plugin_dir/scripts/start-loop.sh $plugin_dir'"
 tmux_test set-hook -g 'client-attached[1]' "run-shell 'echo user-hook'"
 tmux_test set-hook -g 'alert-bell[0]' "run-shell -b '$plugin_dir/scripts/bell-to-ai-attn.sh'"
+# A user hook in the plugin's own slot must survive, moved elsewhere.
+tmux_test set-hook -g 'session-created[50]' "run-shell 'echo user-slot-50'"
 
 load_plugin() {
   TMUX="$socket,0,0" bash "$plugin_dir/tmux-ai-attn.tmux"
@@ -90,6 +92,8 @@ printf '%s\n' "$hooks" | grep -Fq "client-attached[1] run-shell \"echo user-hook
 if printf '%s\n' "$hooks" | grep -Eq '^(client-attached\[0\]|alert-bell)[[ ]'; then
   fail "legacy plugin hooks survived the upgrade" "$hooks"
 fi
+printf '%s\n' "$hooks" | grep -Eq '^session-created\[[0-9]+\] run-shell "echo user-slot-50"$' \
+  || fail "the user's hook in slot 50 was lost" "$hooks"
 if printf '%s\n' "$hooks" | grep -Fq 'TMUX_AI_ATTN_DIR'; then
   fail "a hook kept \$TMUX_AI_ATTN_DIR instead of the plugin path" "$hooks"
 fi
