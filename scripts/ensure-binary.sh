@@ -46,19 +46,52 @@ checksums_url="${base_url}/${version}/checksums.txt"
 
 mkdir -p "$BIN_DIR" "$CACHE_DIR"
 
+# Several servers can prepare binaries at once, from one checkout or from
+# several (TPM's and pmux's) sharing CACHE_DIR. So each run downloads and
+# builds into files of its own, and renames a file into place only once it
+# is complete; renames within a directory are atomic, so nothing ever reads
+# a partial checksums file, binary, or version.
+TEMP_FILES=()
+remove_temp_files() {
+  rm -f "${TEMP_FILES[@]+"${TEMP_FILES[@]}"}" 2>/dev/null || true
+}
+trap remove_temp_files EXIT
+
+# Sets the variable named $1 to a new private file beside $2, to rename over
+# it. (Not called in $(...), so the parent shell records the file to clean up.)
+temp_beside() {
+  local new
+  new="$(mktemp "$(dirname "$2")/.$(basename "$2").XXXXXX")"
+  TEMP_FILES+=("$new")
+  printf -v "$1" '%s' "$new"
+}
+
+fetch() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2" 2>/dev/null
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+record_version() {
+  local file
+  temp_beside file "$VERSION_FILE"
+  printf '%s' "$version" > "$file"
+  mv "$file" "$VERSION_FILE"
+}
+
 verify_checksum() {
   local file="$1"
   local checksums_file="$CACHE_DIR/checksums.txt.${version}"
-  local expected actual
+  local expected actual partial
 
   if [ ! -s "$checksums_file" ]; then
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL "$checksums_url" -o "$checksums_file" 2>/dev/null || return 1
-    elif command -v wget >/dev/null 2>&1; then
-      wget -qO "$checksums_file" "$checksums_url" 2>/dev/null || return 1
-    else
-      return 1
-    fi
+    temp_beside partial "$checksums_file"
+    fetch "$checksums_url" "$partial" || return 1
+    mv "$partial" "$checksums_file"
   fi
 
   # checksums.txt format: <hash>  <filename>  (sha256sum output; "*<filename>" in binary mode)
@@ -88,12 +121,15 @@ build_from_source() {
     printf 'go not found; cannot build tmux-ai-attn-sync from source\n' >&2
     return 1
   fi
+  local built
+  temp_beside built "$BIN"
   (
     cd "$CURRENT_DIR"
-    GOCACHE="${GOCACHE:-$CACHE_DIR/go-build}" go build -o "$BIN" ./cmd/tmux-ai-attn-sync
+    GOCACHE="${GOCACHE:-$CACHE_DIR/go-build}" go build -o "$built" ./cmd/tmux-ai-attn-sync
   )
-  chmod +x "$BIN"
-  printf '%s' "$version" > "$VERSION_FILE"
+  chmod +x "$built"
+  mv "$built" "$BIN"
+  record_version
 }
 
 if [ "$use_local_build" = "on" ]; then
@@ -112,30 +148,17 @@ if [ -x "$BIN" ] && [ "$installed_version" = "$version" ]; then
 fi
 
 # Try downloading a release asset; fall back to building from source.
-download_ok=false
-tmp="$CACHE_DIR/${asset}.tmp"
-
-if command -v curl >/dev/null 2>&1; then
-  if curl -fsSL "$url" -o "$tmp" 2>/dev/null; then
-    download_ok=true
-  fi
-elif command -v wget >/dev/null 2>&1; then
-  if wget -qO "$tmp" "$url" 2>/dev/null; then
-    download_ok=true
-  fi
-fi
-
-if [ "$download_ok" = true ]; then
-  if verify_checksum "$tmp"; then
-    chmod +x "$tmp"
-    mv "$tmp" "$BIN"
-    printf '%s' "$version" > "$VERSION_FILE"
+download=""
+temp_beside download "$BIN"
+if fetch "$url" "$download"; then
+  if verify_checksum "$download"; then
+    chmod +x "$download"
+    mv "$download" "$BIN"
+    record_version
   else
-    rm -f "$tmp" 2>/dev/null || true
     printf 'downloaded binary failed checksum verification, falling back to source build\n' >&2
     build_from_source
   fi
 else
-  rm -f "$tmp" 2>/dev/null || true
   build_from_source
 fi

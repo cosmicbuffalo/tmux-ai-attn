@@ -49,6 +49,32 @@ git clone https://github.com/cosmicbuffalo/tmux-ai-attn ~/.tmux/plugins/tmux-ai-
 run-shell "~/.tmux/plugins/tmux-ai-attn/tmux-ai-attn.tmux"
 ```
 
+### With tmux.rb
+
+If you write your tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb), you can include the plugin's configuration in your own instead of loading `tmux-ai-attn.tmux`. Install the plugin with TPM as above, or clone it anywhere, then require its Ruby module by name:
+
+```ruby
+require "tmux-ai-attn"
+
+Tmux.configure do
+  # The plugin with its defaults...
+  use TmuxAiAttn
+  # ...or with options, named as in Configuration without the @ai_attn_ prefix:
+  # append TmuxAiAttn.config(seen_flash_seconds: 30, flash_multiplier: 8)
+
+  # Optional: the default window tabs, as tmux.rb formats.
+  global.status.interval = 1
+  window.status.format = TmuxAiAttn.window_status_format
+  window.status.current_format = TmuxAiAttn.window_status_current_format
+end
+```
+
+tmux.rb finds a TPM-installed plugin on its own. For a checkout elsewhere, point it there with `TMUX_RB_PLUGIN_PATH=~/src/tmux-ai-attn` or `tmux.rb build --plugin-path ~/src/tmux-ai-attn`. tmux.rb releases without plugin lookup need the path instead: `require File.expand_path("~/src/tmux-ai-attn/lib/tmux-ai-attn")`. The checkout must exist when you build, so a setup script should clone it before building the configuration.
+
+Options passed to `TmuxAiAttn.config` replace any value already set; the others get their defaults only when unset. The plugin starts its sync loop with the settings in effect where it is included, so pass options to `TmuxAiAttn.config`, or set them earlier in your configuration. Loading it again, or also through TPM's `@plugin` line, is harmless: its hooks use a fixed slot, and a sync loop already running the current build is left alone.
+
+tmux.rb is never needed to use the plugin: `tmux-ai-attn.tmux` loads a precompiled `tmux-ai-attn.conf`.
+
 Reload your tmux config:
 
 ```bash
@@ -229,7 +255,7 @@ The plugin writes these tmux user options on each sync cycle. Use them in your f
 | `@ai_attn_window_waiting_count` | integer | Number of waiting panes in this window. |
 | `@ai_attn_window_flash` | `0` / `1` | Transient flag. Set to `1` when a new attention signal arrives and the window has not yet been acknowledged. Stays `1` for background windows until the user switches to them. For the active window, stays `1` for `@ai_attn_seen_flash_seconds` then auto-clears. |
 | `@ai_attn_window_state` | string | Aggregate state of the window: the highest-priority state among all panes (`waiting` > `working` > `stopped` > `done`). Empty when idle. |
-| `@ai_attn_window_segment` | string | Pre-rendered tmux format string containing the indicator (flash bg, state icon with color, text style reset). Use with `#{E:@ai_attn_window_segment}` in your format strings — the `E:` prefix expands the embedded style sequences. Set `@ai_attn_color_text_fg` to `default` to restore the enclosing window-status style; colors and icons are controlled by the `@ai_attn_color_*` and `@ai_attn_icon_*` options. |
+| `@ai_attn_window_segment` | string | Pre-rendered tmux format string containing the indicator (flash bg, state icon with color, text style reset). Use with `#{E:@ai_attn_window_segment}` in your format strings — the `E:` prefix expands the embedded style sequences, and a working window's spinner frame, which the segment may hold as a reference to `@ai_attn_spinner_frame` (see below). Set `@ai_attn_color_text_fg` to `default` to restore the enclosing window-status style; colors and icons are controlled by the `@ai_attn_color_*` and `@ai_attn_icon_*` options. |
 
 ### Per-pane options
 
@@ -252,7 +278,9 @@ Use state/waiting flags for steady-state indicators (e.g., a colored window tab)
 
 ### Window tab styling (using pre-rendered segment)
 
-The easiest approach: use `#{E:@ai_attn_window_segment}` to drop in the indicator. The daemon pre-renders the flash background, state icon, and text color reset. You just place it between your tab's index and window name:
+The easiest approach: use `#{E:@ai_attn_window_segment}` to drop in the indicator. The daemon pre-renders the flash background, state icon, and text color reset. You just place it between your tab's index and window name.
+
+While every format that shows the segment expands it (with `E:` or `T:`, including a substitution such as `#{s|...||:#{E:@ai_attn_window_segment}}`), a working window's segment refers to the spinner frame instead of holding it, so each frame of the animation writes one option however many windows are working. The daemon checks the global window and status formats, and any set on a single window; if one reads the segment without expanding it, the segments hold the frame itself, as before.
 
 ```tmux
 set -g window-status-format '\
@@ -310,8 +338,9 @@ set -g status-right '\
 3. It maps `ai-attn` records to tmux panes and windows, computes waiting/flash state, aggregates per-window state (priority: `waiting` > `working` > `stopped` > `done`), and pre-renders a `@ai_attn_window_segment` option with the indicator styles for each window.
 4. When any pane is in `working` state, the daemon ticks at ~120ms to drive spinner animation. Spinner-only ticks update just the working window segments and shared frame; stable pane/window state is not rewritten. Flash animation toggles at a configurable multiple of the tick rate (default 4×, giving ~480ms cadence). When only stateful but non-working panes exist, the tick drops to 10s.
 5. If the visual state has not changed since the last sync, no tmux writes are performed. Spinner-only ticks update only working-window segments and the shared frame.
-6. Display-only ticks reuse the cached records, so age text and flash animation updates do not need to respawn `ai-attn` on every timer tick.
-7. The binary self-terminates when the tmux server exits (all sessions closed) and cleans up its PID file.
+6. Display-only ticks reuse the cached records, so age text and flash animation updates do not need to respawn `ai-attn` on every timer tick. They also reuse the plugin options, panes, windows, and attached clients read from tmux for up to a second, and send their updates and the status redraw in one tmux command, so a spinner tick normally starts a single tmux client.
+7. Animation only runs as fast as anyone can see it. With no client attached, the spinner and flashes pause (state changes still show at once). Without `@ai_attn_refresh_client`, tmux redraws the status line only every `status-interval` seconds, so the daemon ticks no faster than that. And when `focus-events` is on and no attached terminal has focus, it ticks once a second.
+8. The binary self-terminates when the tmux server exits (all sessions closed) and cleans up its PID file.
 
 ### Signal path
 

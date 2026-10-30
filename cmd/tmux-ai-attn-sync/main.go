@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,7 +57,15 @@ type segmentConfig struct {
 	colorFlashBg string
 	colorFlashFg string
 	colorTextFg  string
+	// frameRef: a working window's segment shows the spinner frame by
+	// reference, as #{@ai_attn_spinner_frame}, so a spinner tick only writes
+	// that one global option. Only safe when every format reading the
+	// segment expands it; see segmentReadersExpand.
+	frameRef bool
 }
+
+// spinnerFrameRef is how a segment refers to the current spinner frame.
+const spinnerFrameRef = "#{@ai_attn_spinner_frame}"
 
 func optionOr(globals map[string]string, key, fallback string) string {
 	if v := globals[key]; v != "" {
@@ -108,6 +117,9 @@ func renderWindowSegment(windowState string, flashing bool, flashPhase string, s
 	case "working":
 		iconColor = cfg.colorWorking
 		icon = spinnerFrame
+		if cfg.frameRef {
+			icon = spinnerFrameRef
+		}
 	case "done":
 		iconColor = cfg.colorDone
 		icon = cfg.iconDone
@@ -195,6 +207,76 @@ type syncer struct {
 	flashTickCounter     int
 	// updateFailures counts consecutive syncs whose tmux option update failed.
 	updateFailures int
+	// globals, topo, and activeWindows cache the last tmux reads, taken at
+	// readAt, so animation ticks can reuse them instead of spawning three tmux
+	// clients each. nil means the next sync reads them again.
+	globals       map[string]string
+	topo          *paneTopology
+	activeWindows map[string]struct{}
+	// clients and focused, read with activeWindows: how many clients are
+	// attached, and whether any of their terminals has focus.
+	clients int
+	focused bool
+	readAt  time.Time
+	// windowFormatsRaw caches whether a format set on a single window reads
+	// @ai_attn_window_segment without expanding it, checked for the windows
+	// in windowFormatsKey at windowFormatsAt.
+	windowFormatsRaw bool
+	windowFormatsKey string
+	windowFormatsAt  time.Time
+	// segmentsWritten says whether this daemon has written the window
+	// segments yet, and segmentsFrameRef how they show the spinner frame.
+	segmentsWritten  bool
+	segmentsFrameRef bool
+}
+
+// windowFormatsMaxAge bounds how long the check of formats set on single
+// windows is reused while the windows stay the same.
+const windowFormatsMaxAge = 10 * time.Second
+
+// tmuxReadMaxAge bounds how long animation ticks reuse cached tmux reads, so
+// option edits and window, pane, or client changes are picked up within it.
+const tmuxReadMaxAge = time.Second
+
+// pausedTick is how often an animation ticks while no client is attached:
+// nothing is seen, so it only needs to resume soon after one attaches. State
+// changes still sync at once, from ai-attn's notifications.
+const pausedTick = 5 * time.Second
+
+// unfocusedTick is the fastest an animation ticks while no attached
+// terminal has focus.
+const unfocusedTick = time.Second
+
+// displayPace is how fast the status line can usefully animate. See paceFor.
+type displayPace struct {
+	// paused: no client is attached, so no animation is seen.
+	paused bool
+	// minTick: animation ticks no faster than this.
+	minTick time.Duration
+}
+
+// paceFor works out the display pace from the options and clients tmux
+// reported. With no client attached nothing is seen. Without
+// @ai_attn_refresh_client, tmux redraws the status line only every
+// status-interval seconds (never, at 0), so faster ticks write frames nobody
+// sees. And when tmux tracks focus (focus-events on) and no attached
+// terminal has it, a frame a second is enough.
+func paceFor(globals map[string]string, clients int, focused bool) displayPace {
+	if clients == 0 {
+		return displayPace{paused: true}
+	}
+	var pace displayPace
+	if !isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
+		seconds, err := strconv.Atoi(globals["status-interval"])
+		if err != nil || seconds <= 0 {
+			return displayPace{paused: true}
+		}
+		pace.minTick = time.Duration(seconds) * time.Second
+	}
+	if globals["focus-events"] == "on" && !focused && pace.minTick < unfocusedTick {
+		pace.minTick = unfocusedTick
+	}
+	return pace
 }
 
 // updateFailuresBeforeError is how many consecutive failed updates it takes
@@ -404,14 +486,21 @@ func tmuxServerIsGone(socket string, err error) bool {
 // gone and the recommended tick interval for the next display refresh (0 means
 // no tick is needed because no state is being displayed).
 func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duration) {
-	globals, err := tmuxGetGlobalOptions(s.socket, "@ai_attn_")
-	if err != nil {
-		logf("tmux error: %v", err)
-		if tmuxServerIsGone(s.socket, err) {
-			return true, 0
+	// Animation ticks within tmuxReadMaxAge of the last read reuse it; an
+	// ai-attn change or a stale read starts over from tmux.
+	if refreshQuery || s.globals == nil || time.Since(s.readAt) >= tmuxReadMaxAge {
+		s.globals, s.topo, s.activeWindows = nil, nil, nil
+		globals, err := tmuxGetGlobalOptions(s.socket, "@ai_attn_")
+		if err != nil {
+			logf("tmux error: %v", err)
+			if tmuxServerIsGone(s.socket, err) {
+				return true, 0
+			}
+			return false, time.Second // retry
 		}
-		return false, time.Second // retry
+		s.globals, s.readAt = globals, time.Now()
 	}
+	globals := s.globals
 
 	nowUnix := time.Now().Unix()
 
@@ -466,60 +555,37 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		}
 	}
 
-	paneLines, err := tmux(s.socket, "list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{@ai_attn_window_seen_at}\t#{pane_current_command}\t#{pane_current_path}")
-	if err != nil {
-		logf("%v", err)
-		return false, 0
-	}
-
-	paneToWindow := map[string]string{}
-	paneIdentities := map[string]paneIdentity{}
-	panes := map[string]struct{}{}
-	windows := map[string]struct{}{}
-	seenAtByWindow := map[string]int64{}
-
-	for _, line := range strings.Split(strings.TrimSpace(paneLines), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
+	if s.topo == nil {
+		paneLines, err := tmux(s.socket, "list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{@ai_attn_window_seen_at}\t#{pane_current_command}\t#{pane_current_path}")
+		if err != nil {
+			logf("%v", err)
+			return false, 0
 		}
-		parts := strings.SplitN(line, "\t", 5)
-		if len(parts) < 2 {
-			continue
+		clientLines, err := tmux(s.socket, "list-clients", "-F", "#{window_id}\t#{client_flags}")
+		if err != nil {
+			logf("%v", err)
+			return false, 0
 		}
-		paneID := parts[0]
-		windowID := parts[1]
-		paneToWindow[paneID] = windowID
-		if len(parts) == 5 {
-			paneIdentities[paneID] = paneIdentity{Command: parts[3], CWD: parts[4]}
-		}
-		panes[paneID] = struct{}{}
-		if _, seen := windows[windowID]; !seen {
-			windows[windowID] = struct{}{}
-			seenAt := int64(0)
-			if len(parts) == 3 {
-				if v, parseErr := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); parseErr == nil {
-					seenAt = v
-				}
+		activeWindows, clients, focused := parseClientLines(clientLines)
+		topo := parsePaneLines(paneLines)
+		s.topo, s.activeWindows, s.clients, s.focused = &topo, activeWindows, clients, focused
+		if key := windowsKey(topo.windows); key != s.windowFormatsKey || time.Since(s.windowFormatsAt) >= windowFormatsMaxAge {
+			raw, err := windowFormatsReadSegmentRaw(s.socket, topo.windows)
+			if err != nil {
+				// Unknown: keep writing frames into the segments, which
+				// every format can show.
+				logf("%v", err)
+				raw = true
 			}
-			seenAtByWindow[windowID] = seenAt
+			s.windowFormatsRaw, s.windowFormatsKey, s.windowFormatsAt = raw, key, time.Now()
 		}
 	}
+	segCfg.frameRef = segmentReadersExpand(globals) && !s.windowFormatsRaw
+	topo, activeWindows := s.topo, s.activeWindows
+	pace := paceFor(globals, s.clients, s.focused)
+	paneToWindow, panes, windows, seenAtByWindow := topo.paneToWindow, topo.panes, topo.windows, topo.seenAtByWindow
 
-	clientWindowLines, err := tmux(s.socket, "list-clients", "-F", "#{window_id}")
-	if err != nil {
-		logf("%v", err)
-		return false, 0
-	}
-	activeWindows := map[string]struct{}{}
-	for _, line := range strings.Split(strings.TrimSpace(clientWindowLines), "\n") {
-		windowID := strings.TrimSpace(line)
-		if windowID == "" {
-			continue
-		}
-		activeWindows[windowID] = struct{}{}
-	}
-
-	state, nextSeenAtByWindow := buildFlashStateWithPaneIdentities(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket, paneIdentities)
+	state, nextSeenAtByWindow := buildFlashStateWithPaneIdentities(payload.Records, paneToWindow, windows, activeWindows, seenAtByWindow, nowUnix, flashGraceSeconds, s.socket, topo.paneIdentities)
 
 	// Persist window flash for the full grace period once started,
 	// but only while the window still has waiting panes.
@@ -583,10 +649,13 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	}
 
 	clearingStaleError := refreshQuery && queryErr == nil && globals["@ai_attn_last_error"] != ""
-	visualChanged := nextStateHash != currentStateHash || nextFlashPhase != currentFlashPhase
+	// Segments written by another daemon, or showing the frame the other way,
+	// are rewritten.
+	segmentsStale := !s.segmentsWritten || s.segmentsFrameRef != segCfg.frameRef
+	visualChanged := nextStateHash != currentStateHash || nextFlashPhase != currentFlashPhase || segmentsStale
 	spinnerChanged := spinnerFrame != globals["@ai_attn_spinner_frame"]
 	if !visualChanged && !clearingStaleError && !spinnerChanged {
-		return false, tickForState(state, tickMs, flashMultiplier)
+		return false, tickForState(state, tickMs, flashMultiplier, pace)
 	}
 
 	// A working spinner normally changes every tick. Keep that hot path small:
@@ -596,13 +665,8 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		batch := appendWorkingSpinnerUpdates(
 			nil, windowStates, state.WindowsFlashing, nextFlashPhase, spinnerFrame, segCfg,
 		)
-		s.noteUpdate(tmuxBatch(s.socket, batch), queryErr)
-		if isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
-			if err := tmuxRefreshClientBestEffort(s.socket); err != nil {
-				logf("%v", err)
-			}
-		}
-		return false, tickForState(state, tickMs, flashMultiplier)
+		s.noteUpdate(s.publish(batch), queryErr)
+		return false, tickForState(state, tickMs, flashMultiplier, pace)
 	}
 
 	// Batch all updates into a single tmux call.
@@ -640,14 +704,92 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	batch = appendGlobalOption(batch, "@ai_attn_state_hash", nextStateHash)
 	batch = appendGlobalOption(batch, "@ai_attn_spinner_frame", spinnerFrame)
 
-	s.noteUpdate(tmuxBatch(s.socket, batch), queryErr)
-	if isTruthy(strings.ToLower(globals["@ai_attn_refresh_client"])) {
-		if err := tmuxRefreshClientBestEffort(s.socket); err != nil {
-			logf("%v", err)
+	err := s.publish(batch)
+	if err == nil {
+		for windowID, nextSeenAt := range nextSeenAtByWindow {
+			seenAtByWindow[windowID] = nextSeenAt
+		}
+		s.segmentsWritten, s.segmentsFrameRef = true, segCfg.frameRef
+	}
+	s.noteUpdate(err, queryErr)
+
+	return false, tickForState(state, tickMs, flashMultiplier, pace)
+}
+
+// publish sends a sync's option updates, followed by a status redraw when
+// @ai_attn_refresh_client is on, then brings the cached globals in line with
+// what it wrote. A failed update leaves tmux's options unknown, so it drops
+// the cache and the next sync reads tmux again.
+func (s *syncer) publish(batch []string) error {
+	refresh := isTruthy(strings.ToLower(s.globals["@ai_attn_refresh_client"]))
+	if err := tmuxBatchRefresh(s.socket, batch, refresh); err != nil {
+		s.globals, s.topo, s.activeWindows = nil, nil, nil
+		return err
+	}
+	applyGlobalWrites(s.globals, batch)
+	return nil
+}
+
+// applyGlobalWrites records the global options a batch set in globals.
+func applyGlobalWrites(globals map[string]string, batch []string) {
+	start := 0
+	for i := 0; i <= len(batch); i++ {
+		if i < len(batch) && batch[i] != ";" {
+			continue
+		}
+		if cmd := batch[start:i]; len(cmd) == 4 && cmd[0] == "set-option" && cmd[1] == "-gq" {
+			globals[cmd[2]] = cmd[3]
+		}
+		start = i + 1
+	}
+}
+
+// paneTopology is what one list-panes read reports about panes and windows.
+type paneTopology struct {
+	paneToWindow   map[string]string
+	paneIdentities map[string]paneIdentity
+	panes          map[string]struct{}
+	windows        map[string]struct{}
+	seenAtByWindow map[string]int64
+}
+
+// parsePaneLines parses list-panes output in the format syncOnce requests:
+// pane ID, window ID, @ai_attn_window_seen_at, command, and path, tab-separated.
+func parsePaneLines(out string) paneTopology {
+	topo := paneTopology{
+		paneToWindow:   map[string]string{},
+		paneIdentities: map[string]paneIdentity{},
+		panes:          map[string]struct{}{},
+		windows:        map[string]struct{}{},
+		seenAtByWindow: map[string]int64{},
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 5)
+		if len(parts) < 2 {
+			continue
+		}
+		paneID := parts[0]
+		windowID := parts[1]
+		topo.paneToWindow[paneID] = windowID
+		if len(parts) == 5 {
+			topo.paneIdentities[paneID] = paneIdentity{Command: parts[3], CWD: parts[4]}
+		}
+		topo.panes[paneID] = struct{}{}
+		if _, seen := topo.windows[windowID]; !seen {
+			topo.windows[windowID] = struct{}{}
+			seenAt := int64(0)
+			if len(parts) >= 3 {
+				if v, parseErr := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); parseErr == nil {
+					seenAt = v
+				}
+			}
+			topo.seenAtByWindow[windowID] = seenAt
 		}
 	}
-
-	return false, tickForState(state, tickMs, flashMultiplier)
+	return topo
 }
 
 // advanceFlashPhase advances the flash-phase state machine by one tick and
@@ -689,7 +831,26 @@ func computeWindowStates(statefulPanes map[string]record, paneToWindow map[strin
 // Working panes tick at tickMs for spinner animation, flashing panes tick at
 // tickMs * flashMultiplier for flash animation, other stateful panes need 10s
 // for age text updates, and idle needs no ticking at all.
-func tickForState(state flashState, tickMs int, flashMultiplier int) time.Duration {
+//
+// pace slows the animation ticks (the spinner and flashes) to what the status
+// line can show; the slower age updates are left as they are.
+func tickForState(state flashState, tickMs int, flashMultiplier int, pace displayPace) time.Duration {
+	tick := animationTick(state, tickMs, flashMultiplier)
+	if tick == 0 || tick >= ageTick {
+		return tick
+	}
+	if pace.paused {
+		return pausedTick
+	}
+	return max(tick, pace.minTick)
+}
+
+// ageTick is how often panes with a state, but nothing animating, sync, so
+// their ages stay current.
+const ageTick = 10 * time.Second
+
+// animationTick is the tick interval the state needs at full speed.
+func animationTick(state flashState, tickMs int, flashMultiplier int) time.Duration {
 	spinnerTick := time.Duration(tickMs) * time.Millisecond
 	flashTick := time.Duration(tickMs*flashMultiplier) * time.Millisecond
 	for _, rec := range state.StatefulPanes {
@@ -708,9 +869,30 @@ func tickForState(state flashState, tickMs int, flashMultiplier int) time.Durati
 		}
 	}
 	if len(state.StatefulPanes) > 0 {
-		return 10 * time.Second
+		return ageTick
 	}
 	return 0
+}
+
+// parseClientLines reads list-clients output in the "#{window_id}\t#{client_flags}"
+// format: the windows clients show, how many clients there are, and whether
+// any has focus.
+func parseClientLines(lines string) (activeWindows map[string]struct{}, clients int, focused bool) {
+	activeWindows = map[string]struct{}{}
+	for _, line := range strings.Split(strings.TrimSpace(lines), "\n") {
+		windowID, flags, _ := strings.Cut(strings.TrimSpace(line), "\t")
+		if windowID == "" {
+			continue
+		}
+		clients++
+		activeWindows[windowID] = struct{}{}
+		for _, flag := range strings.Split(flags, ",") {
+			if flag == "focused" {
+				focused = true
+			}
+		}
+	}
+	return activeWindows, clients, focused
 }
 
 // buildFlashState computes the current attention/flash state for all panes and windows
@@ -862,9 +1044,13 @@ func queryAttn(cli string) (listPayload, error) {
 	return payload, nil
 }
 
-// tmux runs a tmux command against the given socket with a 5-second timeout.
+// tmux runs a tmux command against the given socket. Tests replace it to
+// observe the commands a sync sends.
+var tmux = execTmux
+
+// execTmux runs a tmux command against the given socket with a 5-second timeout.
 // Used by all other tmux helper functions (tmuxBatch, tmuxSetGlobal, etc.).
-func tmux(socket string, args ...string) (string, error) {
+func execTmux(socket string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-S", socket}, args...)...)
@@ -885,75 +1071,87 @@ func tmux(socket string, args ...string) (string, error) {
 // separators. The args slice should contain command tokens separated by ";"
 // elements, e.g.: ["set-option", "-gq", "@foo", "bar", ";", "set-option", "-gq", "@baz", "qux"]
 func tmuxBatch(socket string, args []string) error {
-	if len(args) == 0 {
-		return nil
+	for _, chunk := range splitBatch(args) {
+		if _, err := tmux(socket, chunk...); err != nil {
+			return err
+		}
 	}
+	return nil
+}
 
-	// tmux rejects a command string longer than its internal limit with
-	// "command too long" and discards the ENTIRE batch, so every option in it
-	// is silently lost. Split on ";" boundaries so each invocation stays small.
+// tmuxRead runs args like tmuxBatch and returns what they print.
+func tmuxRead(socket string, args []string) (string, error) {
+	var out strings.Builder
+	for _, chunk := range splitBatch(args) {
+		printed, err := tmux(socket, chunk...)
+		if err != nil {
+			return "", err
+		}
+		out.WriteString(printed)
+	}
+	return out.String(), nil
+}
+
+// splitBatch splits a ";"-separated command list into invocations tmux will
+// accept. tmux rejects a command string longer than its internal limit with
+// "command too long" and discards the ENTIRE batch, so every option in it is
+// silently lost. Splitting on ";" boundaries keeps each invocation small.
+func splitBatch(args []string) [][]string {
 	const maxBatchBytes = 4000
 
 	var (
+		chunks    [][]string
 		chunk     []string
 		chunkSize int
 		cmd       []string
 		cmdSize   int
 	)
-
-	flush := func() error {
+	flush := func() {
 		for len(chunk) > 0 && chunk[len(chunk)-1] == ";" {
 			chunk = chunk[:len(chunk)-1]
 		}
-		if len(chunk) == 0 {
-			chunkSize = 0
-			return nil
+		if len(chunk) > 0 {
+			chunks = append(chunks, chunk)
 		}
-		_, err := tmux(socket, chunk...)
-		chunk = nil
-		chunkSize = 0
-		return err
+		chunk, chunkSize = nil, 0
 	}
-
-	appendCmd := func() error {
+	appendCmd := func() {
 		if len(cmd) == 0 {
-			return nil
+			return
 		}
 		if chunkSize > 0 && chunkSize+cmdSize > maxBatchBytes {
-			if err := flush(); err != nil {
-				return err
-			}
+			flush()
 		}
 		chunk = append(chunk, cmd...)
 		chunkSize += cmdSize
-		cmd = nil
-		cmdSize = 0
-		return nil
+		cmd, cmdSize = nil, 0
 	}
-
 	for _, a := range args {
 		cmd = append(cmd, a)
 		cmdSize += len(a) + 1
 		if a == ";" {
-			if err := appendCmd(); err != nil {
-				return err
-			}
+			appendCmd()
 		}
 	}
-	if err := appendCmd(); err != nil {
-		return err
-	}
-	return flush()
+	appendCmd()
+	flush()
+	return chunks
 }
 
-// tmuxRefreshClientBestEffort asks tmux to redraw the status bar, silently ignoring
-// "no current client" errors. Called from syncOnce when @ai_attn_refresh_client is on.
-func tmuxRefreshClientBestEffort(socket string) error {
-	_, err := tmux(socket, "refresh-client", "-S")
-	if err == nil {
-		return nil
+// tmuxBatchRefresh runs args like tmuxBatch and, when refresh is set, ends the
+// final invocation with "refresh-client -S" to redraw status lines without
+// spawning another client. tmux stops a command sequence at its first failure,
+// so the refresh goes last, and its "no current client" error (no client is
+// attached) is ignored.
+func tmuxBatchRefresh(socket string, args []string, refresh bool) error {
+	if refresh {
+		if len(args) > 0 {
+			args = append(args[:len(args):len(args)], ";")
+		}
+		args = append(args, "refresh-client", "-S")
 	}
-	if strings.Contains(err.Error(), "no current client") {
+	err := tmuxBatch(socket, args)
+	if err != nil && refresh && strings.Contains(err.Error(), "no current client") {
 		return nil
 	}
 	return err
@@ -997,6 +1195,10 @@ func appendPaneState(batch []string, paneID string, state, agent, reason string,
 // appendWorkingSpinnerUpdates builds the minimal batch needed for a spinner
 // frame change. Sorting keeps command order deterministic for tests and logs.
 func appendWorkingSpinnerUpdates(batch []string, windowStates map[string]string, windowsFlashing map[string]bool, flashPhase, spinnerFrame string, cfg segmentConfig) []string {
+	// Segments that refer to the frame pick up the new one from the global.
+	if cfg.frameRef {
+		return appendGlobalOption(batch, "@ai_attn_spinner_frame", spinnerFrame)
+	}
 	windowIDs := make([]string, 0, len(windowStates))
 	for windowID, state := range windowStates {
 		if state == "working" {
@@ -1019,8 +1221,12 @@ func tmuxSetGlobal(socket, name, value string) error {
 
 // tmuxGetGlobalOptions fetches all global user options matching the given prefix
 // in a single tmux call and returns them as a map of name->value.
+//
+// The global session, server, and window options are read in one call, and
+// besides the prefixed options the result has those paceFor needs and the
+// formats segmentReadersExpand checks.
 func tmuxGetGlobalOptions(socket, prefix string) (map[string]string, error) {
-	out, err := tmux(socket, "show-options", "-gq")
+	out, err := tmux(socket, "show-options", "-gq", ";", "show-options", "-sq", ";", "show-options", "-gwq")
 	if err != nil {
 		return nil, err
 	}
@@ -1029,18 +1235,103 @@ func tmuxGetGlobalOptions(socket, prefix string) (map[string]string, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if !strings.HasPrefix(line, prefix) {
+		name, value, _ := strings.Cut(line, " ")
+		if !strings.HasPrefix(name, prefix) && name != "status-interval" && name != "focus-events" && !isSegmentReaderOption(name) {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 2)
-		name := parts[0]
-		value := ""
-		if len(parts) == 2 {
-			value = strings.TrimPrefix(strings.TrimSuffix(parts[1], "\""), "\"")
-		}
+		value = strings.TrimPrefix(strings.TrimSuffix(value, "\""), "\"")
 		options[name] = value
 	}
 	return options, nil
+}
+
+// windowFormatOptions are the window options whose formats may show
+// @ai_attn_window_segment.
+var windowFormatOptions = []string{"window-status-format", "window-status-current-format", "pane-border-format"}
+
+// isSegmentReaderOption reports whether the option named name holds a format
+// that may show @ai_attn_window_segment: a window format, or a status line.
+func isSegmentReaderOption(name string) bool {
+	return slices.Contains(windowFormatOptions, name) ||
+		name == "status-left" || name == "status-right" || strings.HasPrefix(name, "status-format[")
+}
+
+// segmentReadersExpand reports whether every global format that shows
+// @ai_attn_window_segment expands it (#{E:...}), so a segment may refer to
+// the spinner frame instead of containing it.
+func segmentReadersExpand(globals map[string]string) bool {
+	for name, value := range globals {
+		if isSegmentReaderOption(name) && readsSegmentRaw(value) {
+			return false
+		}
+	}
+	return true
+}
+
+// readsSegmentRaw reports whether format reads @ai_attn_window_segment
+// without expanding it, which would show a frame reference as text. A read
+// expands when its modifiers include E or T; a conditional only tests it.
+func readsSegmentRaw(format string) bool {
+	const name = "@ai_attn_window_segment"
+	rest := format
+	for {
+		i := strings.Index(rest, name)
+		if i < 0 {
+			return false
+		}
+		open := strings.LastIndex(rest[:i], "#{")
+		if open < 0 {
+			return true
+		}
+		modifiers := rest[open+2 : i]
+		expands := strings.HasPrefix(modifiers, "?")
+		for _, modifier := range strings.Split(strings.TrimSuffix(modifiers, ":"), ";") {
+			if modifier == "E" || modifier == "T" {
+				expands = true
+			}
+		}
+		if !expands {
+			return true
+		}
+		rest = rest[i+len(name):]
+	}
+}
+
+// windowsKey identifies a set of windows.
+func windowsKey(windows map[string]struct{}) string {
+	ids := make([]string, 0, len(windows))
+	for id := range windows {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
+}
+
+// windowFormatsReadSegmentRaw reports whether a format set on one of windows
+// (rather than globally) reads @ai_attn_window_segment without expanding it.
+// show-options -w with a target and name prints only an option set on that
+// window, so one call asks every window and normally prints nothing.
+func windowFormatsReadSegmentRaw(socket string, windows map[string]struct{}) (bool, error) {
+	var args []string
+	for _, id := range strings.Split(windowsKey(windows), ",") {
+		if id == "" {
+			continue
+		}
+		for _, name := range windowFormatOptions {
+			args = append(args, "show-options", "-wq", "-t", id, name, ";")
+		}
+	}
+	out, err := tmuxRead(socket, args)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		name, value, _ := strings.Cut(line, " ")
+		if slices.Contains(windowFormatOptions, name) && readsSegmentRaw(value) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // boolString converts a bool to "1" or "0" for use in tmux option values.

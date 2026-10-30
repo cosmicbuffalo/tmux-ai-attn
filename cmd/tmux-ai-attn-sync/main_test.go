@@ -2,8 +2,10 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -210,7 +212,7 @@ func TestTickForStateFlashingWithWorkingReturns120ms(t *testing.T) {
 			"%2": true,
 		},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 120*time.Millisecond {
 		t.Fatalf("expected 120ms tick when working+flashing, got %v", got)
 	}
@@ -225,7 +227,7 @@ func TestTickForStateWorkingOnlyReturns120ms(t *testing.T) {
 		},
 		PanesFlashing: map[string]bool{},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 120*time.Millisecond {
 		t.Fatalf("expected 120ms tick for working state (spinner), got %v", got)
 	}
@@ -239,7 +241,7 @@ func TestTickForStateWaitingReturns10s(t *testing.T) {
 			"%1": {State: "waiting", Agent: "claude"},
 		},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 10*time.Second {
 		t.Fatalf("expected 10s tick for waiting state, got %v", got)
 	}
@@ -253,7 +255,7 @@ func TestTickForStateDoneReturns10s(t *testing.T) {
 			"%1": {State: "done", Agent: "claude"},
 		},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 10*time.Second {
 		t.Fatalf("expected 10s tick for done state, got %v", got)
 	}
@@ -265,7 +267,7 @@ func TestTickForStateIdleReturnsZero(t *testing.T) {
 	state := flashState{
 		StatefulPanes: map[string]record{},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 0 {
 		t.Fatalf("expected 0 tick for idle state, got %v", got)
 	}
@@ -826,7 +828,7 @@ func TestTickForStateWindowFlashOnly(t *testing.T) {
 		PanesFlashing:   map[string]bool{},
 		WindowsFlashing: map[string]bool{"@1": true},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 480*time.Millisecond {
 		t.Fatalf("expected 480ms tick for window-only flash, got %v", got)
 	}
@@ -968,7 +970,7 @@ func TestTickForStateFlashOnlyReturns480ms(t *testing.T) {
 		},
 		PanesFlashing: map[string]bool{"%1": true},
 	}
-	got := tickForState(state, 120, 4)
+	got := tickForState(state, 120, 4, displayPace{})
 	if got != 480*time.Millisecond {
 		t.Fatalf("expected 480ms tick for flash-only, got %v", got)
 	}
@@ -1319,5 +1321,400 @@ func TestBuildFlashStateIgnoresRetiredTerminalBellRecords(t *testing.T) {
 	}
 	if state.WaitingWindows["@2"] != 0 || state.WindowsFlashing["@2"] {
 		t.Fatal("retired terminal-bell record must not create waiting state")
+	}
+}
+
+func TestParsePaneLinesReadsWindowSeenAt(t *testing.T) {
+	topo := parsePaneLines("%1\t@1\t1700\tclaude\t/src\n%2\t@1\t1700\tzsh\t/src\n%3\t@2\t\tzsh\t/tmp\n")
+	if got := topo.seenAtByWindow["@1"]; got != 1700 {
+		t.Fatalf("seenAt @1 = %d, want 1700", got)
+	}
+	if got := topo.seenAtByWindow["@2"]; got != 0 {
+		t.Fatalf("seenAt @2 = %d, want 0", got)
+	}
+	if topo.paneToWindow["%2"] != "@1" || len(topo.panes) != 3 || len(topo.windows) != 2 {
+		t.Fatalf("unexpected topology: %+v", topo)
+	}
+	if got := topo.paneIdentities["%1"]; got != (paneIdentity{Command: "claude", CWD: "/src"}) {
+		t.Fatalf("identity %%1 = %+v", got)
+	}
+}
+
+// fakeTmux replaces tmux for one test, records each invocation, and answers
+// the reads a sync makes with a one-window, one-pane server.
+type fakeTmux struct {
+	calls   [][]string
+	globals string
+	clients string
+	// windowFormats answers per-window show-options calls.
+	windowFormats string
+	err           error
+}
+
+func installFakeTmux(t *testing.T) *fakeTmux {
+	t.Helper()
+	f := &fakeTmux{
+		globals: "@ai_attn_refresh_client on\n@ai_attn_spinner_frames a,b\n",
+		clients: "@1\tattached,focused\n",
+	}
+	t.Cleanup(func() { tmux = execTmux })
+	tmux = func(socket string, args ...string) (string, error) {
+		f.calls = append(f.calls, args)
+		switch args[0] {
+		case "show-options":
+			if contains(args, "-t") {
+				return f.windowFormats, nil
+			}
+			return f.globals, nil
+		case "list-panes":
+			return "%1\t@1\t0\tclaude\t/src\n", nil
+		case "list-clients":
+			return f.clients, nil
+		}
+		return "", f.err
+	}
+	return f
+}
+
+func (f *fakeTmux) commands() []string {
+	names := make([]string, len(f.calls))
+	for i, call := range f.calls {
+		names[i] = call[0]
+	}
+	return names
+}
+
+func newWorkingSyncer() *syncer {
+	return &syncer{
+		socket:        "/tmp/tmux-ai-attn-test",
+		cachedPayload: listPayload{Records: []record{{Agent: "claude", PaneID: "%1", State: "working", UpdatedAt: 1}}},
+		hasCached:     true,
+	}
+}
+
+func TestSpinnerTickReusesRecentTmuxReads(t *testing.T) {
+	f := installFakeTmux(t)
+	s := newWorkingSyncer()
+
+	s.syncOnce(false)
+	if got, want := strings.Join(f.commands(), " "), "show-options list-panes list-clients show-options set-window-option"; got != want {
+		t.Fatalf("first sync ran %q, want %q", got, want)
+	}
+
+	// Force a frame change so the tick has something to publish.
+	f.calls = nil
+	s.globals["@ai_attn_spinner_frame"] = "x"
+	s.syncOnce(false)
+	if len(f.calls) != 1 {
+		t.Fatalf("spinner tick ran %d tmux commands (%q), want 1", len(f.calls), f.commands())
+	}
+	call := f.calls[0]
+	if contains(call, "@ai_attn_state_hash") || contains(call, "@ai_attn_pane_state") {
+		t.Fatalf("spinner tick rewrote stable state: %q", call)
+	}
+	if got := strings.Join(call[len(call)-3:], " "); got != "; refresh-client -S" {
+		t.Fatalf("spinner tick ended with %q, want the refresh", got)
+	}
+	if s.globals["@ai_attn_spinner_frame"] == "x" {
+		t.Fatal("cached spinner frame not updated after the write")
+	}
+}
+
+func TestSpinnerTickRereadsStaleTmuxReads(t *testing.T) {
+	f := installFakeTmux(t)
+	s := newWorkingSyncer()
+	s.syncOnce(false)
+
+	f.calls = nil
+	s.readAt = time.Now().Add(-tmuxReadMaxAge)
+	s.globals["@ai_attn_spinner_frame"] = "x"
+	s.syncOnce(false)
+	if got := strings.Join(f.commands(), " "); !strings.HasPrefix(got, "show-options list-panes list-clients") {
+		t.Fatalf("stale tick ran %q, want fresh reads first", got)
+	}
+}
+
+func TestAttnChangeRereadsTmux(t *testing.T) {
+	f := installFakeTmux(t)
+	cli := filepath.Join(t.TempDir(), "ai-attn")
+	script := "#!/bin/sh\necho '{\"records\":[{\"agent\":\"claude\",\"pane_id\":\"%1\",\"state\":\"working\",\"updated_at\":1}]}'\n"
+	if err := os.WriteFile(cli, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.globals += "@ai_attn_cli " + cli + "\n"
+	s := newWorkingSyncer()
+	s.syncOnce(false)
+
+	f.calls = nil
+	s.syncOnce(true)
+	if got := strings.Join(f.commands(), " "); !strings.HasPrefix(got, "show-options list-panes list-clients") {
+		t.Fatalf("ai-attn change ran %q, want fresh reads first", got)
+	}
+}
+
+func TestFailedUpdateDropsCachedTmuxReads(t *testing.T) {
+	f := installFakeTmux(t)
+	s := newWorkingSyncer()
+	f.err = errors.New("tmux set-window-option: timed out after 5s")
+	s.syncOnce(false)
+	if s.globals != nil || s.topo != nil {
+		t.Fatal("cache kept after a failed update")
+	}
+
+	f.calls, f.err = nil, nil
+	s.syncOnce(false)
+	if got := strings.Join(f.commands(), " "); !strings.HasPrefix(got, "show-options list-panes list-clients") {
+		t.Fatalf("sync after a failure ran %q, want fresh reads first", got)
+	}
+}
+
+func TestTmuxBatchRefreshIgnoresNoCurrentClient(t *testing.T) {
+	f := installFakeTmux(t)
+	f.err = errors.New("tmux set-option -gq @a 1 … (2 commands, 30 bytes): no current client")
+	if err := tmuxBatchRefresh("s", []string{"set-option", "-gq", "@a", "1"}, true); err != nil {
+		t.Fatalf("tmuxBatchRefresh = %v, want nil", err)
+	}
+	if err := tmuxBatchRefresh("s", []string{"set-option", "-gq", "@a", "1"}, false); err == nil {
+		t.Fatal("tmuxBatchRefresh without refresh swallowed the error")
+	}
+}
+
+func TestTmuxBatchRefreshRefreshesOnceInFinalChunk(t *testing.T) {
+	f := installFakeTmux(t)
+	var batch []string
+	for i := 0; i < 200; i++ {
+		batch = appendGlobalOption(batch, fmt.Sprintf("@tat_%d", i), strings.Repeat("x", 80))
+	}
+	if err := tmuxBatchRefresh("s", batch, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) < 2 {
+		t.Fatalf("batch sent in %d invocations, want it chunked", len(f.calls))
+	}
+	for i, call := range f.calls {
+		if got := contains(call, "refresh-client"); got != (i == len(f.calls)-1) {
+			t.Fatalf("invocation %d of %d has refresh-client = %v", i+1, len(f.calls), got)
+		}
+	}
+	if last := f.calls[len(f.calls)-1]; last[len(last)-1] != "-S" {
+		t.Fatalf("final invocation ends with %q, want the refresh last", last[len(last)-1])
+	}
+}
+
+func TestApplyGlobalWritesRecordsOnlyGlobalSets(t *testing.T) {
+	globals := map[string]string{"@ai_attn_state_hash": "old"}
+	batch := appendWindowOption(nil, "@1", "@ai_attn_window_segment", "seg")
+	batch = appendGlobalOption(batch, "@ai_attn_state_hash", "new")
+	batch = appendPaneOption(batch, "%1", "@ai_attn_pane_state", "working")
+	batch = appendGlobalOption(batch, "@ai_attn_spinner_frame", "")
+	applyGlobalWrites(globals, batch)
+	want := map[string]string{"@ai_attn_state_hash": "new", "@ai_attn_spinner_frame": ""}
+	if !reflect.DeepEqual(globals, want) {
+		t.Fatalf("globals = %v, want %v", globals, want)
+	}
+}
+
+func TestPaceForFollowsWhatTheStatusLineCanShow(t *testing.T) {
+	refreshing := map[string]string{"@ai_attn_refresh_client": "on", "status-interval": "1", "focus-events": "on"}
+	if got := paceFor(refreshing, 0, false); !got.paused {
+		t.Fatalf("no clients: %+v, want paused", got)
+	}
+	if got := paceFor(refreshing, 1, true); got != (displayPace{}) {
+		t.Fatalf("focused and refreshing: %+v, want full speed", got)
+	}
+	if got := paceFor(refreshing, 2, false); got.minTick != unfocusedTick {
+		t.Fatalf("unfocused: %+v, want %v", got, unfocusedTick)
+	}
+	// Without focus-events, tmux cannot tell, so nothing slows down.
+	noFocusEvents := map[string]string{"@ai_attn_refresh_client": "on", "focus-events": "off"}
+	if got := paceFor(noFocusEvents, 1, false); got != (displayPace{}) {
+		t.Fatalf("focus-events off: %+v, want full speed", got)
+	}
+	// Without forced redraws, frames faster than status-interval go unseen.
+	timed := map[string]string{"@ai_attn_refresh_client": "off", "status-interval": "2", "focus-events": "on"}
+	if got := paceFor(timed, 1, true); got.minTick != 2*time.Second {
+		t.Fatalf("refresh off: %+v, want 2s", got)
+	}
+	never := map[string]string{"@ai_attn_refresh_client": "off", "status-interval": "0"}
+	if got := paceFor(never, 1, true); !got.paused {
+		t.Fatalf("refresh off and status-interval 0: %+v, want paused", got)
+	}
+}
+
+func TestTickForStatePacesOnlyAnimation(t *testing.T) {
+	working := flashState{StatefulPanes: map[string]record{"%1": {State: "working"}}}
+	waiting := flashState{StatefulPanes: map[string]record{"%1": {State: "done"}}}
+	if got := tickForState(working, 120, 4, displayPace{paused: true}); got != pausedTick {
+		t.Fatalf("paused spinner ticks every %v, want %v", got, pausedTick)
+	}
+	if got := tickForState(working, 120, 4, displayPace{minTick: time.Second}); got != time.Second {
+		t.Fatalf("slowed spinner ticks every %v, want 1s", got)
+	}
+	if got := tickForState(working, 2000, 4, displayPace{minTick: time.Second}); got != 2*time.Second {
+		t.Fatalf("a spinner slower than the floor ticks every %v, want 2s", got)
+	}
+	if got := tickForState(waiting, 120, 4, displayPace{paused: true}); got != ageTick {
+		t.Fatalf("age updates tick every %v while paused, want %v", got, ageTick)
+	}
+	if got := tickForState(flashState{}, 120, 4, displayPace{paused: true}); got != 0 {
+		t.Fatalf("idle ticks every %v, want 0", got)
+	}
+}
+
+func TestParseClientLinesCountsClientsAndFocus(t *testing.T) {
+	windows, clients, focused := parseClientLines("@1\tattached,focused,UTF-8\n@2\tattached,UTF-8\n\n")
+	if clients != 2 || !focused || len(windows) != 2 {
+		t.Fatalf("got %v %d %v", windows, clients, focused)
+	}
+	_, clients, focused = parseClientLines("@1\tattached,UTF-8\n")
+	if clients != 1 || focused {
+		t.Fatalf("unfocused: got %d %v", clients, focused)
+	}
+	if _, clients, _ := parseClientLines(""); clients != 0 {
+		t.Fatalf("no clients: got %d", clients)
+	}
+}
+
+func TestSyncPausesTheSpinnerWithoutClients(t *testing.T) {
+	f := installFakeTmux(t)
+	f.clients = ""
+	s := newWorkingSyncer()
+	if _, tick := s.syncOnce(false); tick != pausedTick {
+		t.Fatalf("tick without clients = %v, want %v", tick, pausedTick)
+	}
+}
+
+func TestGlobalOptionsIncludeWhatPacingNeeds(t *testing.T) {
+	f := installFakeTmux(t)
+	f.globals = "@ai_attn_tick_ms 120\nstatus-interval 1\nstatus on\nfocus-events on\nescape-time 10\n"
+	globals, err := tmuxGetGlobalOptions("s", "@ai_attn_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"@ai_attn_tick_ms": "120", "status-interval": "1", "focus-events": "on"}
+	if len(globals) != len(want) {
+		t.Fatalf("got %v, want %v", globals, want)
+	}
+	for name, value := range want {
+		if globals[name] != value {
+			t.Fatalf("%s = %q, want %q", name, globals[name], value)
+		}
+	}
+	if got := strings.Join(f.calls[0], " "); got != "show-options -gq ; show-options -sq ; show-options -gwq" {
+		t.Fatalf("read with %q, want one call for all three", got)
+	}
+}
+
+func TestReadsSegmentRawTellsExpandingReadsApart(t *testing.T) {
+	for format, raw := range map[string]bool{
+		"#[fg=colour255]#{E:@ai_attn_window_segment}#W":               false,
+		"#{T:@ai_attn_window_segment}":                                false,
+		"#{E;s|#\\[[^]]*\\]||:@ai_attn_window_segment}":               false,
+		"#{s|#\\[[^]]*\\]||:#{E:@ai_attn_window_segment}}":            false,
+		"#{?@ai_attn_window_segment,yes,no}":                          false,
+		"#I:#W":                                                       false,
+		"#{@ai_attn_window_segment}":                                  true,
+		"#{s|#\\[[^]]*\\]||:@ai_attn_window_segment}":                 true,
+		"#{E:@ai_attn_window_segment} and #{@ai_attn_window_segment}": true,
+		"#{=10:@ai_attn_window_segment}":                              true,
+	} {
+		if got := readsSegmentRaw(format); got != raw {
+			t.Errorf("readsSegmentRaw(%q) = %v, want %v", format, got, raw)
+		}
+	}
+}
+
+func TestSegmentReadersExpandChecksEveryFormatOption(t *testing.T) {
+	expanding := map[string]string{
+		"window-status-format":         "#{E:@ai_attn_window_segment}#W",
+		"window-status-current-format": "#{E:@ai_attn_window_segment}#W",
+		"@ai_attn_window_segment":      "#{@ai_attn_window_segment}", // not a format
+	}
+	if !segmentReadersExpand(expanding) {
+		t.Fatal("expanding formats judged raw")
+	}
+	for _, name := range []string{"status-format[1]", "status-right", "pane-border-format"} {
+		raw := map[string]string{name: "#{@ai_attn_window_segment}"}
+		if segmentReadersExpand(raw) {
+			t.Fatalf("raw read in %s missed", name)
+		}
+	}
+}
+
+func TestWindowFormatsReadSegmentRawAsksEveryWindowAtOnce(t *testing.T) {
+	f := installFakeTmux(t)
+	windows := map[string]struct{}{"@2": {}, "@1": {}}
+	raw, err := windowFormatsReadSegmentRaw("s", windows)
+	if err != nil || raw {
+		t.Fatalf("no window formats: raw=%v err=%v", raw, err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("asked in %d calls, want 1", len(f.calls))
+	}
+	got := strings.Join(f.calls[0], " ")
+	for _, want := range []string{"-t @1 window-status-format", "-t @2 window-status-current-format", "-t @2 pane-border-format"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("call %q lacks %q", got, want)
+		}
+	}
+
+	f.windowFormats = "window-status-format \"#{@ai_attn_window_segment}#W\"\n"
+	if raw, _ := windowFormatsReadSegmentRaw("s", windows); !raw {
+		t.Fatal("a raw read set on one window was missed")
+	}
+}
+
+func TestSpinnerTickWritesOnlyTheFrameWhenSegmentsReferToIt(t *testing.T) {
+	f := installFakeTmux(t)
+	s := newWorkingSyncer()
+	s.syncOnce(false)
+	segment := ""
+	for _, call := range f.calls {
+		for i, arg := range call {
+			if arg == "@ai_attn_window_segment" && i+1 < len(call) {
+				segment = call[i+1]
+			}
+		}
+	}
+	if !strings.Contains(segment, spinnerFrameRef) {
+		t.Fatalf("segment %q does not refer to the frame", segment)
+	}
+
+	f.calls = nil
+	s.globals["@ai_attn_spinner_frame"] = "x"
+	s.syncOnce(false)
+	call := strings.Join(f.calls[0], " ")
+	if strings.Contains(call, "set-window-option") || !strings.Contains(call, "set-option -gq @ai_attn_spinner_frame") {
+		t.Fatalf("spinner tick ran %q, want only the frame and the redraw", call)
+	}
+}
+
+func TestARawReaderKeepsFramesInTheSegmentsAndRewritesThemOnChange(t *testing.T) {
+	f := installFakeTmux(t)
+	f.windowFormats = "window-status-format \"#{@ai_attn_window_segment}\"\n"
+	s := newWorkingSyncer()
+	s.syncOnce(false)
+	if s.segmentsFrameRef || !s.segmentsWritten {
+		t.Fatalf("raw reader: frameRef=%v written=%v", s.segmentsFrameRef, s.segmentsWritten)
+	}
+	f.calls = nil
+	s.globals["@ai_attn_spinner_frame"] = "x"
+	s.syncOnce(false)
+	if call := strings.Join(f.calls[0], " "); !strings.Contains(call, "set-window-option") {
+		t.Fatalf("spinner tick ran %q, want the window segment written", call)
+	}
+
+	// The raw reader goes away: the next check switches modes and rewrites
+	// every segment, not just the working ones' frames.
+	f.windowFormats = ""
+	s.windowFormatsAt = time.Time{}
+	s.readAt = time.Time{}
+	f.calls = nil
+	s.syncOnce(false)
+	if !s.segmentsFrameRef {
+		t.Fatal("did not switch to frame references")
+	}
+	if call := strings.Join(f.calls[len(f.calls)-1], " "); !strings.Contains(call, "@ai_attn_state_hash") {
+		t.Fatalf("mode switch ran %q, want a full write", call)
 	}
 }

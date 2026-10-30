@@ -83,6 +83,8 @@ First, find the user's `tmux.conf`. Check these locations in order:
 
 If neither exists, ask the user where their tmux configuration lives.
 
+If the user writes their configuration in Ruby with tmux.rb (a `.rb` file using `Tmux.configure`, compiled to their `tmux.conf`), ask whether they want to include the plugin from Ruby instead, as described in the README's [With tmux.rb](README.md#with-tmuxrb) section. In that case, edit the Ruby file rather than the compiled `tmux.conf`, and pass Step 5's options to `TmuxAiAttn.config` instead of adding `set -g` lines.
+
 Add the TPM plugin line to the user's `tmux.conf` (if not already present):
 
 ```tmux

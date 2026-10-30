@@ -1,4 +1,4 @@
-.PHONY: build test format lint check clean install-hooks
+.PHONY: build test format lint check clean install-hooks conf spec
 
 CMD := ./cmd/tmux-ai-attn-sync
 
@@ -13,6 +13,13 @@ format:
 
 lint:
 	go vet ./...
+
+# tmux-ai-attn.conf is compiled from lib/tmux-ai-attn.rb by tmux.rb (bundle install first).
+conf:
+	bundle exec tmux.rb build tmux-ai-attn.rb --output tmux-ai-attn.conf
+
+spec:
+	bundle exec ruby spec/compiled_config_spec.rb
 
 check:
 	@bash scripts/check.sh

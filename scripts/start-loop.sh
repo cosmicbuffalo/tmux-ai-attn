@@ -2,6 +2,10 @@
 set -euo pipefail
 
 CURRENT_DIR="${1:?current dir required}"
+# --restart (used when the plugin loads) replaces a running daemon unless it
+# already runs the current build, so loading the plugin again, or from both a
+# tmux.rb config and TPM, leaves a current daemon alone. Hooks pass no flag
+# and only start a daemon when none is running.
 RESTART=0
 if [ "${2:-}" = "--restart" ]; then
   RESTART=1
@@ -146,11 +150,20 @@ if ! "$CURRENT_DIR/scripts/ensure-binary.sh" "$CURRENT_DIR"; then
   exit 0
 fi
 
+BIN="$CURRENT_DIR/bin/tmux-ai-attn-sync"
+# Which build a daemon runs: its binary's path and checksum, recorded at launch.
+BUILD_FILE="${RUN_DIR}/tmux-ai-attn-${SOCKET_KEY}.build"
+BUILD_ID="$BIN $(cksum < "$BIN" 2>/dev/null | awk '{print $1 "-" $2}')"
+
 for CANDIDATE_PIDFILE in "$PIDFILE" "$LEGACY_PIDFILE"; do
   [ -f "$CANDIDATE_PIDFILE" ] || continue
   PID="$(cat "$CANDIDATE_PIDFILE" 2>/dev/null || true)"
   if pid_is_daemon "$PID"; then
     if [ "$RESTART" -eq 0 ]; then
+      exit 0
+    fi
+    if [ "$CANDIDATE_PIDFILE" = "$PIDFILE" ] \
+       && [ "$(cat "$BUILD_FILE" 2>/dev/null || true)" = "$BUILD_ID" ]; then
       exit 0
     fi
     kill "$PID" 2>/dev/null || true
@@ -167,9 +180,9 @@ for CANDIDATE_PIDFILE in "$PIDFILE" "$LEGACY_PIDFILE"; do
   # A live but unrelated PID is deliberately left alone.
   rm -f "$CANDIDATE_PIDFILE"
 done
+rm -f "$BUILD_FILE"
 
 LOGFILE="${RUN_DIR}/tmux-ai-attn-${SOCKET_KEY}.log"
-BIN="$CURRENT_DIR/bin/tmux-ai-attn-sync"
 
 # Clear stale runtime options from a previous daemon crash (kill -9, OOM, etc.).
 # Configuration options are preserved; only runtime state is cleared.
@@ -184,6 +197,7 @@ DAEMON_PID=$!
 for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   PID="$(cat "$PIDFILE" 2>/dev/null || true)"
   if [ "$PID" = "$DAEMON_PID" ] && pid_is_daemon "$PID"; then
+    printf '%s\n' "$BUILD_ID" > "$BUILD_FILE"
     exit 0
   fi
   kill -0 "$DAEMON_PID" 2>/dev/null || break

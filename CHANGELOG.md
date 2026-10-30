@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-10-30
+
+This minor release adds a public tmux.rb integration alongside the existing TPM installation. Existing tmux options and the tmux 3.3a minimum remain unchanged; TPM users still need neither Ruby nor tmux.rb.
+
+- Write the plugin's tmux configuration in Ruby with [tmux.rb](https://github.com/cosmicbuffalo/tmux.rb). `lib/tmux-ai-attn.rb` compiles to `tmux-ai-attn.conf`, which `tmux-ai-attn.tmux` loads, so installing the plugin still needs neither Ruby nor tmux.rb. tmux.rb configurations can include the plugin with `use TmuxAiAttn`.
+- Register the plugin's hooks in array slot 50 so reloading replaces them. Loading the plugin, by either path, removes only the hooks earlier releases appended in other slots, without renumbering other hooks. A hook that something else already keeps in slot 50 is moved to the end of its array, and logged, rather than overwritten.
+- Leave a running sync loop alone when the plugin loads again unless its binary changed, so loading the plugin twice (from a tmux.rb configuration and TPM) or reloading no longer restarts it and clears the indicators.
+- Work out the hook log path when a hook fires rather than when it is registered.
+- Keep concurrent binary downloads from corrupting each other. Plugin checkouts sharing the download cache (such as TPM's and pmux's) used one temporary file, so one could install another's partial download and record it as current, leaving the daemon unable to start until the binary was deleted. Each download and build now uses private files and renames them into place once complete.
+- Read back when a waiting window was last seen. Since 0.3.3 the daemon misparsed `@ai_attn_window_seen_at`, so a window whose attention signal had been acknowledged started flashing again as soon as you switched away from it.
+- Start one tmux client per spinner tick instead of five. While an agent is working the daemon ticks about eight times a second, and each tick re-read the plugin options, panes, and clients before writing, then redrew in a separate client: about 40 tmux clients a second. Ticks now reuse what tmux reported within the last second (an `ai-attn` change still reads it afresh), and the redraw rides along with the option updates.
+- Animate only as fast as anyone can see. The spinner and flashes pause while no client is attached, tick no faster than `status-interval` when `@ai_attn_refresh_client` is off (tmux would not redraw them sooner), and slow to once a second while no attached terminal has focus (with `focus-events` on). Reading the options this needs adds no tmux client: the session and server options are read in one call.
+- Write one option per spinner frame, however many windows are working. While every format that shows `@ai_attn_window_segment` expands it, as the README has always asked, a working window's segment refers to `@ai_attn_spinner_frame` instead of holding the frame. The daemon checks the global window and status formats, and those set on single windows (once a window set, or every 10 seconds), and keeps writing the frame into the segments when any reads them unexpanded.
+
 ## 0.3.5 — 2026-10-22
 
 - Keep the daemon log bounded. Messages are clipped, a repeated message is logged at most once every five minutes with a count of the copies skipped, tmux errors summarize a batch instead of echoing it, and the daemon empties its log past 1 MB. Previously a failure on every tick logged the whole command each time and could fill the small tmpfs holding the log.
