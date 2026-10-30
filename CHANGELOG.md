@@ -10,6 +10,7 @@
 - Read back when a waiting window was last seen. Since 0.3.3 the daemon misparsed `@ai_attn_window_seen_at`, so a window whose attention signal had been acknowledged started flashing again as soon as you switched away from it.
 - Start one tmux client per spinner tick instead of five. While an agent is working the daemon ticks about eight times a second, and each tick re-read the plugin options, panes, and clients before writing, then redrew in a separate client: about 40 tmux clients a second. Ticks now reuse what tmux reported within the last second (an `ai-attn` change still reads it afresh), and the redraw rides along with the option updates.
 - Animate only as fast as anyone can see. The spinner and flashes pause while no client is attached, tick no faster than `status-interval` when `@ai_attn_refresh_client` is off (tmux would not redraw them sooner), and slow to once a second while no attached terminal has focus (with `focus-events` on). Reading the options this needs adds no tmux client: the session and server options are read in one call.
+- Write one option per spinner frame, however many windows are working. While every format that shows `@ai_attn_window_segment` expands it, as the README has always asked, a working window's segment refers to `@ai_attn_spinner_frame` instead of holding the frame. The daemon checks the global window and status formats, and those set on single windows (once a window set, or every 10 seconds), and keeps writing the frame into the segments when any reads them unexpanded.
 
 ## 0.3.5 — 2026-10-22
 

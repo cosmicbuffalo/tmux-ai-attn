@@ -255,7 +255,7 @@ The plugin writes these tmux user options on each sync cycle. Use them in your f
 | `@ai_attn_window_waiting_count` | integer | Number of waiting panes in this window. |
 | `@ai_attn_window_flash` | `0` / `1` | Transient flag. Set to `1` when a new attention signal arrives and the window has not yet been acknowledged. Stays `1` for background windows until the user switches to them. For the active window, stays `1` for `@ai_attn_seen_flash_seconds` then auto-clears. |
 | `@ai_attn_window_state` | string | Aggregate state of the window: the highest-priority state among all panes (`waiting` > `working` > `stopped` > `done`). Empty when idle. |
-| `@ai_attn_window_segment` | string | Pre-rendered tmux format string containing the indicator (flash bg, state icon with color, text style reset). Use with `#{E:@ai_attn_window_segment}` in your format strings — the `E:` prefix expands the embedded style sequences. Set `@ai_attn_color_text_fg` to `default` to restore the enclosing window-status style; colors and icons are controlled by the `@ai_attn_color_*` and `@ai_attn_icon_*` options. |
+| `@ai_attn_window_segment` | string | Pre-rendered tmux format string containing the indicator (flash bg, state icon with color, text style reset). Use with `#{E:@ai_attn_window_segment}` in your format strings — the `E:` prefix expands the embedded style sequences, and a working window's spinner frame, which the segment may hold as a reference to `@ai_attn_spinner_frame` (see below). Set `@ai_attn_color_text_fg` to `default` to restore the enclosing window-status style; colors and icons are controlled by the `@ai_attn_color_*` and `@ai_attn_icon_*` options. |
 
 ### Per-pane options
 
@@ -278,7 +278,9 @@ Use state/waiting flags for steady-state indicators (e.g., a colored window tab)
 
 ### Window tab styling (using pre-rendered segment)
 
-The easiest approach: use `#{E:@ai_attn_window_segment}` to drop in the indicator. The daemon pre-renders the flash background, state icon, and text color reset. You just place it between your tab's index and window name:
+The easiest approach: use `#{E:@ai_attn_window_segment}` to drop in the indicator. The daemon pre-renders the flash background, state icon, and text color reset. You just place it between your tab's index and window name.
+
+While every format that shows the segment expands it (with `E:` or `T:`, including a substitution such as `#{s|...||:#{E:@ai_attn_window_segment}}`), a working window's segment refers to the spinner frame instead of holding it, so each frame of the animation writes one option however many windows are working. The daemon checks the global window and status formats, and any set on a single window; if one reads the segment without expanding it, the segments hold the frame itself, as before.
 
 ```tmux
 set -g window-status-format '\

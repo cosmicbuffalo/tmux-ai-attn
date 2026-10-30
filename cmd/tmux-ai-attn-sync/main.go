@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,7 +57,15 @@ type segmentConfig struct {
 	colorFlashBg string
 	colorFlashFg string
 	colorTextFg  string
+	// frameRef: a working window's segment shows the spinner frame by
+	// reference, as #{@ai_attn_spinner_frame}, so a spinner tick only writes
+	// that one global option. Only safe when every format reading the
+	// segment expands it; see segmentReadersExpand.
+	frameRef bool
 }
+
+// spinnerFrameRef is how a segment refers to the current spinner frame.
+const spinnerFrameRef = "#{@ai_attn_spinner_frame}"
 
 func optionOr(globals map[string]string, key, fallback string) string {
 	if v := globals[key]; v != "" {
@@ -108,6 +117,9 @@ func renderWindowSegment(windowState string, flashing bool, flashPhase string, s
 	case "working":
 		iconColor = cfg.colorWorking
 		icon = spinnerFrame
+		if cfg.frameRef {
+			icon = spinnerFrameRef
+		}
 	case "done":
 		iconColor = cfg.colorDone
 		icon = cfg.iconDone
@@ -206,7 +218,21 @@ type syncer struct {
 	clients int
 	focused bool
 	readAt  time.Time
+	// windowFormatsRaw caches whether a format set on a single window reads
+	// @ai_attn_window_segment without expanding it, checked for the windows
+	// in windowFormatsKey at windowFormatsAt.
+	windowFormatsRaw bool
+	windowFormatsKey string
+	windowFormatsAt  time.Time
+	// segmentsWritten says whether this daemon has written the window
+	// segments yet, and segmentsFrameRef how they show the spinner frame.
+	segmentsWritten  bool
+	segmentsFrameRef bool
 }
+
+// windowFormatsMaxAge bounds how long the check of formats set on single
+// windows is reused while the windows stay the same.
+const windowFormatsMaxAge = 10 * time.Second
 
 // tmuxReadMaxAge bounds how long animation ticks reuse cached tmux reads, so
 // option edits and window, pane, or client changes are picked up within it.
@@ -543,7 +569,18 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		activeWindows, clients, focused := parseClientLines(clientLines)
 		topo := parsePaneLines(paneLines)
 		s.topo, s.activeWindows, s.clients, s.focused = &topo, activeWindows, clients, focused
+		if key := windowsKey(topo.windows); key != s.windowFormatsKey || time.Since(s.windowFormatsAt) >= windowFormatsMaxAge {
+			raw, err := windowFormatsReadSegmentRaw(s.socket, topo.windows)
+			if err != nil {
+				// Unknown: keep writing frames into the segments, which
+				// every format can show.
+				logf("%v", err)
+				raw = true
+			}
+			s.windowFormatsRaw, s.windowFormatsKey, s.windowFormatsAt = raw, key, time.Now()
+		}
 	}
+	segCfg.frameRef = segmentReadersExpand(globals) && !s.windowFormatsRaw
 	topo, activeWindows := s.topo, s.activeWindows
 	pace := paceFor(globals, s.clients, s.focused)
 	paneToWindow, panes, windows, seenAtByWindow := topo.paneToWindow, topo.panes, topo.windows, topo.seenAtByWindow
@@ -612,7 +649,10 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 	}
 
 	clearingStaleError := refreshQuery && queryErr == nil && globals["@ai_attn_last_error"] != ""
-	visualChanged := nextStateHash != currentStateHash || nextFlashPhase != currentFlashPhase
+	// Segments written by another daemon, or showing the frame the other way,
+	// are rewritten.
+	segmentsStale := !s.segmentsWritten || s.segmentsFrameRef != segCfg.frameRef
+	visualChanged := nextStateHash != currentStateHash || nextFlashPhase != currentFlashPhase || segmentsStale
 	spinnerChanged := spinnerFrame != globals["@ai_attn_spinner_frame"]
 	if !visualChanged && !clearingStaleError && !spinnerChanged {
 		return false, tickForState(state, tickMs, flashMultiplier, pace)
@@ -669,6 +709,7 @@ func (s *syncer) syncOnce(refreshQuery bool) (serverGone bool, tick time.Duratio
 		for windowID, nextSeenAt := range nextSeenAtByWindow {
 			seenAtByWindow[windowID] = nextSeenAt
 		}
+		s.segmentsWritten, s.segmentsFrameRef = true, segCfg.frameRef
 	}
 	s.noteUpdate(err, queryErr)
 
@@ -1030,65 +1071,71 @@ func execTmux(socket string, args ...string) (string, error) {
 // separators. The args slice should contain command tokens separated by ";"
 // elements, e.g.: ["set-option", "-gq", "@foo", "bar", ";", "set-option", "-gq", "@baz", "qux"]
 func tmuxBatch(socket string, args []string) error {
-	if len(args) == 0 {
-		return nil
+	for _, chunk := range splitBatch(args) {
+		if _, err := tmux(socket, chunk...); err != nil {
+			return err
+		}
 	}
+	return nil
+}
 
-	// tmux rejects a command string longer than its internal limit with
-	// "command too long" and discards the ENTIRE batch, so every option in it
-	// is silently lost. Split on ";" boundaries so each invocation stays small.
+// tmuxRead runs args like tmuxBatch and returns what they print.
+func tmuxRead(socket string, args []string) (string, error) {
+	var out strings.Builder
+	for _, chunk := range splitBatch(args) {
+		printed, err := tmux(socket, chunk...)
+		if err != nil {
+			return "", err
+		}
+		out.WriteString(printed)
+	}
+	return out.String(), nil
+}
+
+// splitBatch splits a ";"-separated command list into invocations tmux will
+// accept. tmux rejects a command string longer than its internal limit with
+// "command too long" and discards the ENTIRE batch, so every option in it is
+// silently lost. Splitting on ";" boundaries keeps each invocation small.
+func splitBatch(args []string) [][]string {
 	const maxBatchBytes = 4000
 
 	var (
+		chunks    [][]string
 		chunk     []string
 		chunkSize int
 		cmd       []string
 		cmdSize   int
 	)
-
-	flush := func() error {
+	flush := func() {
 		for len(chunk) > 0 && chunk[len(chunk)-1] == ";" {
 			chunk = chunk[:len(chunk)-1]
 		}
-		if len(chunk) == 0 {
-			chunkSize = 0
-			return nil
+		if len(chunk) > 0 {
+			chunks = append(chunks, chunk)
 		}
-		_, err := tmux(socket, chunk...)
-		chunk = nil
-		chunkSize = 0
-		return err
+		chunk, chunkSize = nil, 0
 	}
-
-	appendCmd := func() error {
+	appendCmd := func() {
 		if len(cmd) == 0 {
-			return nil
+			return
 		}
 		if chunkSize > 0 && chunkSize+cmdSize > maxBatchBytes {
-			if err := flush(); err != nil {
-				return err
-			}
+			flush()
 		}
 		chunk = append(chunk, cmd...)
 		chunkSize += cmdSize
-		cmd = nil
-		cmdSize = 0
-		return nil
+		cmd, cmdSize = nil, 0
 	}
-
 	for _, a := range args {
 		cmd = append(cmd, a)
 		cmdSize += len(a) + 1
 		if a == ";" {
-			if err := appendCmd(); err != nil {
-				return err
-			}
+			appendCmd()
 		}
 	}
-	if err := appendCmd(); err != nil {
-		return err
-	}
-	return flush()
+	appendCmd()
+	flush()
+	return chunks
 }
 
 // tmuxBatchRefresh runs args like tmuxBatch and, when refresh is set, ends the
@@ -1148,6 +1195,10 @@ func appendPaneState(batch []string, paneID string, state, agent, reason string,
 // appendWorkingSpinnerUpdates builds the minimal batch needed for a spinner
 // frame change. Sorting keeps command order deterministic for tests and logs.
 func appendWorkingSpinnerUpdates(batch []string, windowStates map[string]string, windowsFlashing map[string]bool, flashPhase, spinnerFrame string, cfg segmentConfig) []string {
+	// Segments that refer to the frame pick up the new one from the global.
+	if cfg.frameRef {
+		return appendGlobalOption(batch, "@ai_attn_spinner_frame", spinnerFrame)
+	}
 	windowIDs := make([]string, 0, len(windowStates))
 	for windowID, state := range windowStates {
 		if state == "working" {
@@ -1171,10 +1222,11 @@ func tmuxSetGlobal(socket, name, value string) error {
 // tmuxGetGlobalOptions fetches all global user options matching the given prefix
 // in a single tmux call and returns them as a map of name->value.
 //
-// The global session options and the server options are read in one call, and
-// besides the prefixed options the result has those paceFor needs.
+// The global session, server, and window options are read in one call, and
+// besides the prefixed options the result has those paceFor needs and the
+// formats segmentReadersExpand checks.
 func tmuxGetGlobalOptions(socket, prefix string) (map[string]string, error) {
-	out, err := tmux(socket, "show-options", "-gq", ";", "show-options", "-sq")
+	out, err := tmux(socket, "show-options", "-gq", ";", "show-options", "-sq", ";", "show-options", "-gwq")
 	if err != nil {
 		return nil, err
 	}
@@ -1184,13 +1236,102 @@ func tmuxGetGlobalOptions(socket, prefix string) (map[string]string, error) {
 			continue
 		}
 		name, value, _ := strings.Cut(line, " ")
-		if !strings.HasPrefix(name, prefix) && name != "status-interval" && name != "focus-events" {
+		if !strings.HasPrefix(name, prefix) && name != "status-interval" && name != "focus-events" && !isSegmentReaderOption(name) {
 			continue
 		}
 		value = strings.TrimPrefix(strings.TrimSuffix(value, "\""), "\"")
 		options[name] = value
 	}
 	return options, nil
+}
+
+// windowFormatOptions are the window options whose formats may show
+// @ai_attn_window_segment.
+var windowFormatOptions = []string{"window-status-format", "window-status-current-format", "pane-border-format"}
+
+// isSegmentReaderOption reports whether the option named name holds a format
+// that may show @ai_attn_window_segment: a window format, or a status line.
+func isSegmentReaderOption(name string) bool {
+	return slices.Contains(windowFormatOptions, name) ||
+		name == "status-left" || name == "status-right" || strings.HasPrefix(name, "status-format[")
+}
+
+// segmentReadersExpand reports whether every global format that shows
+// @ai_attn_window_segment expands it (#{E:...}), so a segment may refer to
+// the spinner frame instead of containing it.
+func segmentReadersExpand(globals map[string]string) bool {
+	for name, value := range globals {
+		if isSegmentReaderOption(name) && readsSegmentRaw(value) {
+			return false
+		}
+	}
+	return true
+}
+
+// readsSegmentRaw reports whether format reads @ai_attn_window_segment
+// without expanding it, which would show a frame reference as text. A read
+// expands when its modifiers include E or T; a conditional only tests it.
+func readsSegmentRaw(format string) bool {
+	const name = "@ai_attn_window_segment"
+	rest := format
+	for {
+		i := strings.Index(rest, name)
+		if i < 0 {
+			return false
+		}
+		open := strings.LastIndex(rest[:i], "#{")
+		if open < 0 {
+			return true
+		}
+		modifiers := rest[open+2 : i]
+		expands := strings.HasPrefix(modifiers, "?")
+		for _, modifier := range strings.Split(strings.TrimSuffix(modifiers, ":"), ";") {
+			if modifier == "E" || modifier == "T" {
+				expands = true
+			}
+		}
+		if !expands {
+			return true
+		}
+		rest = rest[i+len(name):]
+	}
+}
+
+// windowsKey identifies a set of windows.
+func windowsKey(windows map[string]struct{}) string {
+	ids := make([]string, 0, len(windows))
+	for id := range windows {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
+}
+
+// windowFormatsReadSegmentRaw reports whether a format set on one of windows
+// (rather than globally) reads @ai_attn_window_segment without expanding it.
+// show-options -w with a target and name prints only an option set on that
+// window, so one call asks every window and normally prints nothing.
+func windowFormatsReadSegmentRaw(socket string, windows map[string]struct{}) (bool, error) {
+	var args []string
+	for _, id := range strings.Split(windowsKey(windows), ",") {
+		if id == "" {
+			continue
+		}
+		for _, name := range windowFormatOptions {
+			args = append(args, "show-options", "-wq", "-t", id, name, ";")
+		}
+	}
+	out, err := tmuxRead(socket, args)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		name, value, _ := strings.Cut(line, " ")
+		if slices.Contains(windowFormatOptions, name) && readsSegmentRaw(value) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // boolString converts a bool to "1" or "0" for use in tmux option values.

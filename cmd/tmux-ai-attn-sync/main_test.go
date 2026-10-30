@@ -1346,7 +1346,9 @@ type fakeTmux struct {
 	calls   [][]string
 	globals string
 	clients string
-	err     error
+	// windowFormats answers per-window show-options calls.
+	windowFormats string
+	err           error
 }
 
 func installFakeTmux(t *testing.T) *fakeTmux {
@@ -1360,6 +1362,9 @@ func installFakeTmux(t *testing.T) *fakeTmux {
 		f.calls = append(f.calls, args)
 		switch args[0] {
 		case "show-options":
+			if contains(args, "-t") {
+				return f.windowFormats, nil
+			}
 			return f.globals, nil
 		case "list-panes":
 			return "%1\t@1\t0\tclaude\t/src\n", nil
@@ -1392,7 +1397,7 @@ func TestSpinnerTickReusesRecentTmuxReads(t *testing.T) {
 	s := newWorkingSyncer()
 
 	s.syncOnce(false)
-	if got, want := strings.Join(f.commands(), " "), "show-options list-panes list-clients set-window-option"; got != want {
+	if got, want := strings.Join(f.commands(), " "), "show-options list-panes list-clients show-options set-window-option"; got != want {
 		t.Fatalf("first sync ran %q, want %q", got, want)
 	}
 
@@ -1595,7 +1600,121 @@ func TestGlobalOptionsIncludeWhatPacingNeeds(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", name, globals[name], value)
 		}
 	}
-	if got := strings.Join(f.calls[0], " "); got != "show-options -gq ; show-options -sq" {
-		t.Fatalf("read with %q, want one call for both", got)
+	if got := strings.Join(f.calls[0], " "); got != "show-options -gq ; show-options -sq ; show-options -gwq" {
+		t.Fatalf("read with %q, want one call for all three", got)
+	}
+}
+
+func TestReadsSegmentRawTellsExpandingReadsApart(t *testing.T) {
+	for format, raw := range map[string]bool{
+		"#[fg=colour255]#{E:@ai_attn_window_segment}#W":               false,
+		"#{T:@ai_attn_window_segment}":                                false,
+		"#{E;s|#\\[[^]]*\\]||:@ai_attn_window_segment}":               false,
+		"#{s|#\\[[^]]*\\]||:#{E:@ai_attn_window_segment}}":            false,
+		"#{?@ai_attn_window_segment,yes,no}":                          false,
+		"#I:#W":                                                       false,
+		"#{@ai_attn_window_segment}":                                  true,
+		"#{s|#\\[[^]]*\\]||:@ai_attn_window_segment}":                 true,
+		"#{E:@ai_attn_window_segment} and #{@ai_attn_window_segment}": true,
+		"#{=10:@ai_attn_window_segment}":                              true,
+	} {
+		if got := readsSegmentRaw(format); got != raw {
+			t.Errorf("readsSegmentRaw(%q) = %v, want %v", format, got, raw)
+		}
+	}
+}
+
+func TestSegmentReadersExpandChecksEveryFormatOption(t *testing.T) {
+	expanding := map[string]string{
+		"window-status-format":         "#{E:@ai_attn_window_segment}#W",
+		"window-status-current-format": "#{E:@ai_attn_window_segment}#W",
+		"@ai_attn_window_segment":      "#{@ai_attn_window_segment}", // not a format
+	}
+	if !segmentReadersExpand(expanding) {
+		t.Fatal("expanding formats judged raw")
+	}
+	for _, name := range []string{"status-format[1]", "status-right", "pane-border-format"} {
+		raw := map[string]string{name: "#{@ai_attn_window_segment}"}
+		if segmentReadersExpand(raw) {
+			t.Fatalf("raw read in %s missed", name)
+		}
+	}
+}
+
+func TestWindowFormatsReadSegmentRawAsksEveryWindowAtOnce(t *testing.T) {
+	f := installFakeTmux(t)
+	windows := map[string]struct{}{"@2": {}, "@1": {}}
+	raw, err := windowFormatsReadSegmentRaw("s", windows)
+	if err != nil || raw {
+		t.Fatalf("no window formats: raw=%v err=%v", raw, err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("asked in %d calls, want 1", len(f.calls))
+	}
+	got := strings.Join(f.calls[0], " ")
+	for _, want := range []string{"-t @1 window-status-format", "-t @2 window-status-current-format", "-t @2 pane-border-format"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("call %q lacks %q", got, want)
+		}
+	}
+
+	f.windowFormats = "window-status-format \"#{@ai_attn_window_segment}#W\"\n"
+	if raw, _ := windowFormatsReadSegmentRaw("s", windows); !raw {
+		t.Fatal("a raw read set on one window was missed")
+	}
+}
+
+func TestSpinnerTickWritesOnlyTheFrameWhenSegmentsReferToIt(t *testing.T) {
+	f := installFakeTmux(t)
+	s := newWorkingSyncer()
+	s.syncOnce(false)
+	segment := ""
+	for _, call := range f.calls {
+		for i, arg := range call {
+			if arg == "@ai_attn_window_segment" && i+1 < len(call) {
+				segment = call[i+1]
+			}
+		}
+	}
+	if !strings.Contains(segment, spinnerFrameRef) {
+		t.Fatalf("segment %q does not refer to the frame", segment)
+	}
+
+	f.calls = nil
+	s.globals["@ai_attn_spinner_frame"] = "x"
+	s.syncOnce(false)
+	call := strings.Join(f.calls[0], " ")
+	if strings.Contains(call, "set-window-option") || !strings.Contains(call, "set-option -gq @ai_attn_spinner_frame") {
+		t.Fatalf("spinner tick ran %q, want only the frame and the redraw", call)
+	}
+}
+
+func TestARawReaderKeepsFramesInTheSegmentsAndRewritesThemOnChange(t *testing.T) {
+	f := installFakeTmux(t)
+	f.windowFormats = "window-status-format \"#{@ai_attn_window_segment}\"\n"
+	s := newWorkingSyncer()
+	s.syncOnce(false)
+	if s.segmentsFrameRef || !s.segmentsWritten {
+		t.Fatalf("raw reader: frameRef=%v written=%v", s.segmentsFrameRef, s.segmentsWritten)
+	}
+	f.calls = nil
+	s.globals["@ai_attn_spinner_frame"] = "x"
+	s.syncOnce(false)
+	if call := strings.Join(f.calls[0], " "); !strings.Contains(call, "set-window-option") {
+		t.Fatalf("spinner tick ran %q, want the window segment written", call)
+	}
+
+	// The raw reader goes away: the next check switches modes and rewrites
+	// every segment, not just the working ones' frames.
+	f.windowFormats = ""
+	s.windowFormatsAt = time.Time{}
+	s.readAt = time.Time{}
+	f.calls = nil
+	s.syncOnce(false)
+	if !s.segmentsFrameRef {
+		t.Fatal("did not switch to frame references")
+	}
+	if call := strings.Join(f.calls[len(f.calls)-1], " "); !strings.Contains(call, "@ai_attn_state_hash") {
+		t.Fatalf("mode switch ran %q, want a full write", call)
 	}
 }
