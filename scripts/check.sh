@@ -36,6 +36,9 @@ bash scripts/test-tmux-hook-compat.sh
 step "tmux conf tests"
 bash scripts/test-tmux-conf.sh
 
+step "daemon option safety tests"
+bash scripts/test-daemon-options.sh
+
 step "tmux.rb spec"
 if command -v bundle >/dev/null 2>&1 && bundle check >/dev/null 2>&1; then
     bundle exec ruby spec/compiled_config_spec.rb

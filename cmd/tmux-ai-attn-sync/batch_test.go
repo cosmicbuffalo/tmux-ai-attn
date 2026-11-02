@@ -34,15 +34,15 @@ func TestTmuxBatchAppliesBatchesLongerThanTmuxAccepts(t *testing.T) {
 		if i > 0 {
 			args = append(args, ";")
 		}
-		args = append(args, "set-option", "-gq", fmt.Sprintf("@tat_%d", i), value)
+		args = append(args, "set-option", "-gq", fmt.Sprintf("@ai_attn_tat_%d", i), value)
 	}
 	if err := tmuxBatch(socket, args); err != nil {
 		t.Fatalf("tmuxBatch: %v", err)
 	}
 	for _, i := range []int{0, n / 2, n - 1} {
-		got, err := tmux(socket, "show-options", "-gv", fmt.Sprintf("@tat_%d", i))
+		got, err := tmux(socket, "show-options", "-gv", fmt.Sprintf("@ai_attn_tat_%d", i))
 		if err != nil || strings.TrimSpace(got) != value {
-			t.Fatalf("@tat_%d = %q, %v; want the value set", i, got, err)
+			t.Fatalf("@ai_attn_tat_%d = %q, %v; want the value set", i, got, err)
 		}
 	}
 }
@@ -65,11 +65,11 @@ func TestTmuxBatchRefreshAppliesOptionsWithoutAttachedClient(t *testing.T) {
 	}
 	t.Cleanup(func() { exec.Command("tmux", "-S", socket, "kill-server").Run() })
 
-	if err := tmuxBatchRefresh(socket, []string{"set-option", "-gq", "@tat_refresh", "1"}, true); err != nil {
+	if err := tmuxBatchRefresh(socket, []string{"set-option", "-gq", "@ai_attn_tat_refresh", "1"}, true); err != nil {
 		t.Fatalf("tmuxBatchRefresh: %v", err)
 	}
-	got, err := tmux(socket, "show-options", "-gv", "@tat_refresh")
+	got, err := tmux(socket, "show-options", "-gv", "@ai_attn_tat_refresh")
 	if err != nil || strings.TrimSpace(got) != "1" {
-		t.Fatalf("@tat_refresh = %q, %v; want 1", got, err)
+		t.Fatalf("@ai_attn_tat_refresh = %q, %v; want 1", got, err)
 	}
 }
