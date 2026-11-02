@@ -1071,12 +1071,72 @@ func execTmux(socket string, args ...string) (string, error) {
 // separators. The args slice should contain command tokens separated by ";"
 // elements, e.g.: ["set-option", "-gq", "@foo", "bar", ";", "set-option", "-gq", "@baz", "qux"]
 func tmuxBatch(socket string, args []string) error {
-	for _, chunk := range splitBatch(args) {
+	for _, chunk := range splitBatch(dropForeignWrites(args)) {
 		if _, err := tmux(socket, chunk...); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ownsOption reports whether the daemon may write the tmux option named name.
+// It reads the user's status-interval, focus-events, and status formats
+// alongside its own options, but only ever writes options under @ai_attn_.
+func ownsOption(name string) bool {
+	return strings.HasPrefix(name, "@ai_attn_")
+}
+
+// setOptionName returns the option a set-option or set-window-option command
+// writes, and whether cmd is such a command. Flag clusters containing t take
+// the next argument as their target (-t, -pt). A write with no option name
+// returns "", which ownsOption rejects.
+func setOptionName(cmd []string) (string, bool) {
+	if len(cmd) == 0 || (cmd[0] != "set-option" && cmd[0] != "set-window-option") {
+		return "", false
+	}
+	for i := 1; i < len(cmd); i++ {
+		arg := cmd[i]
+		if len(arg) > 1 && arg[0] == '-' {
+			if strings.Contains(arg[1:], "t") {
+				i++
+			}
+			continue
+		}
+		return arg, true
+	}
+	return "", true
+}
+
+// dropForeignWrites removes every command from a ";"-separated batch that
+// would write a tmux option the daemon does not own, logging each one. It is
+// the last check before tmux runs a batch, so a change elsewhere in the
+// daemon cannot blank or overwrite the user's options. v0.4.0 shipped that
+// bug: clearing on shutdown emptied status-format and window formats.
+func dropForeignWrites(args []string) []string {
+	var out, cmd []string
+	flush := func() {
+		if len(cmd) == 0 {
+			return
+		}
+		if name, isSet := setOptionName(cmd); isSet && !ownsOption(name) {
+			logf("refusing to write tmux option %q: tmux-ai-attn only writes @ai_attn_ options", name)
+		} else {
+			if len(out) > 0 {
+				out = append(out, ";")
+			}
+			out = append(out, cmd...)
+		}
+		cmd = nil
+	}
+	for _, arg := range args {
+		if arg == ";" {
+			flush()
+			continue
+		}
+		cmd = append(cmd, arg)
+	}
+	flush()
+	return out
 }
 
 // tmuxRead runs args like tmuxBatch and returns what they print.
@@ -1215,8 +1275,7 @@ func appendWorkingSpinnerUpdates(batch []string, windowStates map[string]string,
 
 // tmuxSetGlobal sets a single global tmux option. Called from syncOnce to record errors.
 func tmuxSetGlobal(socket, name, value string) error {
-	_, err := tmux(socket, "set-option", "-gq", name, value)
-	return err
+	return tmuxBatch(socket, appendGlobalOption(nil, name, value))
 }
 
 // tmuxGetGlobalOptions fetches all global user options matching the given prefix
@@ -1361,7 +1420,9 @@ func clearAllAttnOptions(socket string) {
 	}
 	var batch []string
 	for name := range globals {
-		if isConfigOption(name) {
+		// globals also holds the user's status-interval, focus-events, and
+		// status formats, which the plugin reads but must never clear.
+		if !strings.HasPrefix(name, "@ai_attn_") || isConfigOption(name) {
 			continue
 		}
 		batch = appendGlobalOption(batch, name, "")

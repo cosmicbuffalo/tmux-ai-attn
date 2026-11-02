@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 — 2026-11-02
+
+- Stop blanking your status line when the sync loop stops. Since 0.4.0 the daemon reads `status-interval`, `focus-events`, `status-left`, `status-right`, `status-format`, and the window and pane-border formats along with its own options, and clearing its options on shutdown (on `SIGTERM`, such as when an upgrade replaces the daemon, or with `--clear`) emptied all of them. It now clears only `@ai_attn_` state.
+- Refuse to write any tmux option outside `@ai_attn_`. Every batch the daemon sends is checked last thing before tmux runs it, and a write to another option is dropped and logged, so no future change can overwrite your configuration.
+- Test against a real tmux server that syncing, `--clear`, and shutdown leave every option outside `@ai_attn_` unchanged, at global, window, pane, and server scope.
+
+If 0.4.0 blanked your status line, reload your tmux configuration. Options your configuration never sets (such as tmux's default `status-format`) need `tmux set-option -gu status-format` (and `-gwu` for `window-status-format`, `window-status-current-format`, and `pane-border-format`) to return to tmux's defaults.
+
 ## 0.4.0 — 2026-10-30
 
 This minor release adds a public tmux.rb integration alongside the existing TPM installation. Existing tmux options and the tmux 3.3a minimum remain unchanged; TPM users still need neither Ruby nor tmux.rb.

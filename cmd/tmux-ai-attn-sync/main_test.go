@@ -1471,10 +1471,10 @@ func TestFailedUpdateDropsCachedTmuxReads(t *testing.T) {
 func TestTmuxBatchRefreshIgnoresNoCurrentClient(t *testing.T) {
 	f := installFakeTmux(t)
 	f.err = errors.New("tmux set-option -gq @a 1 … (2 commands, 30 bytes): no current client")
-	if err := tmuxBatchRefresh("s", []string{"set-option", "-gq", "@a", "1"}, true); err != nil {
+	if err := tmuxBatchRefresh("s", []string{"set-option", "-gq", "@ai_attn_a", "1"}, true); err != nil {
 		t.Fatalf("tmuxBatchRefresh = %v, want nil", err)
 	}
-	if err := tmuxBatchRefresh("s", []string{"set-option", "-gq", "@a", "1"}, false); err == nil {
+	if err := tmuxBatchRefresh("s", []string{"set-option", "-gq", "@ai_attn_a", "1"}, false); err == nil {
 		t.Fatal("tmuxBatchRefresh without refresh swallowed the error")
 	}
 }
@@ -1483,7 +1483,7 @@ func TestTmuxBatchRefreshRefreshesOnceInFinalChunk(t *testing.T) {
 	f := installFakeTmux(t)
 	var batch []string
 	for i := 0; i < 200; i++ {
-		batch = appendGlobalOption(batch, fmt.Sprintf("@tat_%d", i), strings.Repeat("x", 80))
+		batch = appendGlobalOption(batch, fmt.Sprintf("@ai_attn_tat_%d", i), strings.Repeat("x", 80))
 	}
 	if err := tmuxBatchRefresh("s", batch, true); err != nil {
 		t.Fatal(err)
@@ -1624,6 +1624,29 @@ func TestReadsSegmentRawTellsExpandingReadsApart(t *testing.T) {
 	}
 }
 
+func TestClearAllAttnOptionsLeavesUserOptionsAlone(t *testing.T) {
+	f := installFakeTmux(t)
+	f.globals = "@ai_attn_cli ai-attn\n@ai_attn_state_hash abc\n" +
+		"status-interval 1\nfocus-events on\n" +
+		"status-format[0] \"#[align=left]#{T:status-left}\"\nstatus-format[1] \"#[align=centre]\"\n" +
+		"status-left \"#S\"\nstatus-right \"%H:%M\"\n" +
+		"window-status-format \"#{E:@ai_attn_window_segment}#W\"\n"
+
+	clearAllAttnOptions("s")
+
+	var cleared []string
+	for _, call := range f.calls {
+		for i := range call {
+			if call[i] == "set-option" && i+2 < len(call) && call[i+1] == "-gq" {
+				cleared = append(cleared, call[i+2])
+			}
+		}
+	}
+	if got := strings.Join(cleared, " "); got != "@ai_attn_state_hash" {
+		t.Fatalf("cleared global options %q, want only @ai_attn_state_hash", got)
+	}
+}
+
 func TestSegmentReadersExpandChecksEveryFormatOption(t *testing.T) {
 	expanding := map[string]string{
 		"window-status-format":         "#{E:@ai_attn_window_segment}#W",
@@ -1716,5 +1739,62 @@ func TestARawReaderKeepsFramesInTheSegmentsAndRewritesThemOnChange(t *testing.T)
 	}
 	if call := strings.Join(f.calls[len(f.calls)-1], " "); !strings.Contains(call, "@ai_attn_state_hash") {
 		t.Fatalf("mode switch ran %q, want a full write", call)
+	}
+}
+
+func TestSetOptionNameSkipsFlagsAndTargets(t *testing.T) {
+	cases := []struct {
+		cmd   []string
+		name  string
+		isSet bool
+	}{
+		{[]string{"set-option", "-gq", "@ai_attn_x", "1"}, "@ai_attn_x", true},
+		{[]string{"set-option", "-pt", "%1", "-q", "@ai_attn_pane_state", ""}, "@ai_attn_pane_state", true},
+		{[]string{"set-window-option", "-t", "@2", "-q", "window-status-format", ""}, "window-status-format", true},
+		{[]string{"set-option", "-gq", "status-format[0]", ""}, "status-format[0]", true},
+		{[]string{"set-option", "-gq"}, "", true},
+		{[]string{"refresh-client", "-S"}, "", false},
+		{[]string{"show-options", "-gq"}, "", false},
+	}
+	for _, c := range cases {
+		name, isSet := setOptionName(c.cmd)
+		if name != c.name || isSet != c.isSet {
+			t.Errorf("setOptionName(%q) = %q, %v; want %q, %v", c.cmd, name, isSet, c.name, c.isSet)
+		}
+	}
+}
+
+func TestDropForeignWritesKeepsOnlyOwnOptionsAndOtherCommands(t *testing.T) {
+	var batch []string
+	batch = appendGlobalOption(batch, "@ai_attn_spinner_frame", "x")
+	batch = appendGlobalOption(batch, "status-format[1]", "")
+	batch = appendWindowOption(batch, "@3", "window-status-current-format", "")
+	batch = appendWindowOption(batch, "@3", "@ai_attn_window_segment", "")
+	batch = appendPaneOption(batch, "%4", "pane-border-format", "")
+	batch = append(batch, ";", "refresh-client", "-S")
+
+	got := strings.Join(dropForeignWrites(batch), " ")
+	want := "set-option -gq @ai_attn_spinner_frame x ; set-window-option -t @3 -q @ai_attn_window_segment  ; refresh-client -S"
+	if got != want {
+		t.Fatalf("dropForeignWrites =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestTmuxBatchNeverSendsForeignWrites(t *testing.T) {
+	f := installFakeTmux(t)
+	batch := appendGlobalOption(nil, "status-left", "")
+	batch = appendGlobalOption(batch, "@ai_attn_state_hash", "")
+	if err := tmuxBatch("s", batch); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmuxSetGlobal("s", "status-right", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range f.calls {
+		for _, arg := range call {
+			if arg == "status-left" || arg == "status-right" {
+				t.Fatalf("tmux was asked to write a user option: %q", call)
+			}
+		}
 	}
 }
